@@ -46,5 +46,5 @@ static int behavior_zw3021_delete_init(const struct device *dev) {
     return 0;
 }
 
-DEVICE_DT_INST_DEFINE(0, behavior_zw3021_delete_init, NULL, NULL, NULL, POST_KERNEL,
-                       CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, &behavior_zw3021_delete_driver_api);
+BEHAVIOR_DT_INST_DEFINE(0, behavior_zw3021_delete_init, NULL, NULL, NULL, POST_KERNEL,
+                         CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, &behavior_zw3021_delete_driver_api);
