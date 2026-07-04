@@ -128,18 +128,26 @@ are required).
 
 Three `BEHAVIOR_LOCALITY_GLOBAL` keymap behaviors are provided so they can be
 bound anywhere in a shared keymap on a split build; on the side(s) without
-`CONFIG_ZW3021` (e.g. the BLE central) they're no-ops:
+`CONFIG_ZW3021` (e.g. the BLE central) they're no-ops.
+
+**Keep the devicetree node names short (≤15 characters)**: ZMK's split
+transport packs the behavior device name into a fixed 16-byte field
+(`zmk/app/include/zmk/split/transport/types.h`, `behavior_dev[16]`) and
+`DEVICE_DT_NAME()` falls back to the node's own name when there's no
+separate `label` property. A longer name gets silently truncated (logged as
+`Truncated behavior label ... before invoking peripheral behavior`) and the
+peripheral can never resolve it, so the request just never arrives:
 
 ```dts
-zw3021_enroll: behavior_zw3021_enroll {
+zw3021_enroll: zw3021_enroll {
     compatible = "razilyis,zw3021-enroll";
     #binding-cells = <1>;
 };
-zw3021_delete: behavior_zw3021_delete {
+zw3021_delete: zw3021_delete {
     compatible = "razilyis,zw3021-delete";
     #binding-cells = <1>;
 };
-zw3021_clear: behavior_zw3021_clear {
+zw3021_clear: zw3021_clear {
     compatible = "razilyis,zw3021-clear";
     #binding-cells = <0>;
 };
