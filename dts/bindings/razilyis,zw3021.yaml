@@ -1,0 +1,48 @@
+description: HLK-ZW3021 fingerprint sensor (minimal evaluation driver)
+
+compatible: "razilyis,zw3021"
+
+include: uart-device.yaml
+
+properties:
+  int-gpios:
+    type: phandle-array
+    required: true
+    description: |
+      GPIO connected to the sensor INT pin. Idle low, rises to high
+      while a finger is on the sensor (rising edge = finger placed).
+
+  power-en-gpios:
+    type: phandle-array
+    required: true
+    description: |
+      GPIO connected to the VCC-D load switch enable pin. Active high:
+      driving it high powers the sensor's DSP (VCC-D) on.
+
+  power-on-delay-ms:
+    type: int
+    default: 200
+    description: |
+      Delay after enabling VCC-D before starting to wait for the
+      sensor's boot indication.
+
+  startup-timeout-ms:
+    type: int
+    default: 500
+    description: |
+      Maximum time to wait for the sensor's 0x55 boot byte before
+      falling back to PS_HandShake for boot confirmation.
+
+  identify-timeout-ms:
+    type: int
+    default: 12000
+    description: |
+      Upper bound for PS_AutoIdentify completion. The sensor has its
+      own internal timeout (~8s by default per its BCH configuration
+      register); this property is a host-side safety margin above
+      that, guarding against a lost UART response.
+
+  score-level:
+    type: int
+    default: 3
+    description: PS_AutoIdentify match score level (1-5, 5 is strictest).

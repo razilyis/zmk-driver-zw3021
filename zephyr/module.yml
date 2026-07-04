@@ -1,0 +1,6 @@
+name: zmk-driver-zw3021
+build:
+  cmake: .
+  kconfig: Kconfig
+  settings:
+    dts_root: .

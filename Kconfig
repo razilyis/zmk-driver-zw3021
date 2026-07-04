@@ -1,0 +1,9 @@
+menuconfig ZW3021
+    bool "HLK-ZW3021 fingerprint sensor driver"
+    depends on GPIO && SERIAL
+    help
+      Minimal evaluation driver for the HLK-ZW3021 fingerprint sensor.
+      On finger placement (INT rising edge) it powers the sensor,
+      performs PS_HandShake + PS_AutoIdentify (1:N match) over UART,
+      and logs the result. No behavior/keystroke output is implemented
+      in this phase.
