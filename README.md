@@ -154,21 +154,27 @@ made while one is already running is dropped with a logged warning
 ## Kconfig
 
 ```conf
-CONFIG_ZW3021=y
+CONFIG_ZW3021=y                 # the side with the physical sensor only
+CONFIG_ZW3021_ENROLL_BEHAVIOR=y # every side (see below)
+CONFIG_ZW3021_DELETE_BEHAVIOR=y
+CONFIG_ZW3021_CLEAR_BEHAVIOR=y
 ```
 
-`CONFIG_ZW3021_ENROLL_BEHAVIOR` / `_DELETE_BEHAVIOR` / `_CLEAR_BEHAVIOR` are
-auto-enabled from the devicetree (`$(dt_compat_enabled,...)`) and don't need
-to be set manually.
+`CONFIG_ZW3021_ENROLL_BEHAVIOR` / `_DELETE_BEHAVIOR` / `_CLEAR_BEHAVIOR` must
+be set to `y` in **every** side's `.conf` on a split build (including the
+BLE central, which doesn't have `CONFIG_ZW3021` at all) -- ZMK only forwards
+a `BEHAVIOR_LOCALITY_GLOBAL` behavior to other split sides if it can first
+resolve the behavior device locally; a side missing it logs `No behavior
+assigned to <position> on layer <N>` and never forwards anything at all.
 
 ## Build
 
 Add this repository to the consuming config's `west.yml` as a project, then
-enable `CONFIG_ZW3021=y` in the target shield's `.conf` file. On a split
-build, instantiate the three behavior nodes above in a devicetree file
-shared by every side (not just the one with the sensor), since the
-enroll/delete/clear bindings must exist in every side's keymap build for the
-`BEHAVIOR_LOCALITY_GLOBAL` split forwarding to reach the sensor's side.
+enable `CONFIG_ZW3021=y` in the target shield's `.conf` file (the side with
+the sensor only). On a split build, instantiate the three behavior nodes
+above in a devicetree file shared by every side (not just the one with the
+sensor), and set the three `CONFIG_ZW3021_*_BEHAVIOR=y` flags in every
+side's `.conf` per the Kconfig section above.
 
 ## Expected log output
 
