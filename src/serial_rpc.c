@@ -50,6 +50,14 @@ static char rpc_rx_line[ZW3021_RPC_LINE_MAX];
 static uint16_t rpc_rx_pos;
 static char rpc_resp_buf[ZW3021_RPC_RESPONSE_MAX];
 
+/* Message framing state: a request is dispatched as soon as its top-level
+ * {...} braces balance back to zero, rather than waiting for a newline.
+ * Several serial terminals turned out not to send one reliably; this makes
+ * framing independent of that. Braces inside a quoted string don't count. */
+static int rpc_brace_depth;
+static bool rpc_in_string;
+static bool rpc_escape_next;
+
 static void rpc_write(const char *data, size_t len) {
     for (size_t i = 0; i < len; i++) {
         uart_poll_out(rpc_dev, data[i]);
@@ -298,17 +306,40 @@ static void rpc_thread(void *p1, void *p2, void *p3) {
         bool got_byte = false;
         while (uart_poll_in(rpc_dev, &b) == 0) {
             got_byte = true;
-            if (b == '\n' || b == '\r') {
-                if (rpc_rx_pos > 0) {
+
+            /* Ignore whitespace/newlines between messages; a terminal that
+             * does send line endings still works fine, it's just no longer
+             * required. */
+            if (rpc_rx_pos == 0 && (b == '\n' || b == '\r' || b == ' ')) {
+                continue;
+            }
+
+            if (rpc_rx_pos >= sizeof(rpc_rx_line) - 1) {
+                rpc_rx_pos = 0;
+                rpc_brace_depth = 0;
+                rpc_in_string = false;
+                rpc_escape_next = false;
+                rpc_send_error(-1, "line too long");
+                continue;
+            }
+
+            rpc_rx_line[rpc_rx_pos++] = (char)b;
+
+            if (rpc_escape_next) {
+                rpc_escape_next = false;
+            } else if (rpc_in_string && b == '\\') {
+                rpc_escape_next = true;
+            } else if (b == '"') {
+                rpc_in_string = !rpc_in_string;
+            } else if (!rpc_in_string && b == '{') {
+                rpc_brace_depth++;
+            } else if (!rpc_in_string && b == '}' && rpc_brace_depth > 0) {
+                rpc_brace_depth--;
+                if (rpc_brace_depth == 0) {
                     rpc_rx_line[rpc_rx_pos] = '\0';
                     rpc_process_line(rpc_rx_line);
                     rpc_rx_pos = 0;
                 }
-            } else if (rpc_rx_pos < sizeof(rpc_rx_line) - 1) {
-                rpc_rx_line[rpc_rx_pos++] = b;
-            } else {
-                rpc_rx_pos = 0;
-                rpc_send_error(-1, "line too long");
             }
         }
 
@@ -316,11 +347,14 @@ static void rpc_thread(void *p1, void *p2, void *p3) {
         if (got_byte) {
             last_rx_time = now;
         } else if (rpc_rx_pos > 0 && (now - last_rx_time) > 2000) {
-            /* A message sent without a line ending (or cut off mid-send)
-             * would otherwise sit here forever, silently corrupting the
-             * next real message that arrives. */
-            LOG_WRN("zw3021: RPC: discarding stale partial line (no newline received)");
+            /* A message that never finished (dropped bytes, or braces that
+             * never balanced) would otherwise sit here forever, silently
+             * corrupting the next real message that arrives. */
+            LOG_WRN("zw3021: RPC: discarding stale partial message");
             rpc_rx_pos = 0;
+            rpc_brace_depth = 0;
+            rpc_in_string = false;
+            rpc_escape_next = false;
         }
 
         k_sleep(K_MSEC(20));
