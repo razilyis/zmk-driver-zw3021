@@ -4,11 +4,13 @@ ZMK external module driver for the HLK-ZW3021 fingerprint sensor.
 
 ## Status
 
-Phase 1 (auto-identify) and Phase 3 (enroll/delete/clear) are implemented:
+Phase 1 (auto-identify), Phase 3 (enroll/delete/clear), and Phase 2
+(per-fingerprint-ID keystroke output on match) are implemented:
 
 ```text
 finger placed → INT rising edge → VCC-D on → boot confirmed → PS_HandShake
-→ PS_AutoIdentify (1:N) → result logged → VCC-D off → wait for INT low → re-arm
+→ PS_AutoIdentify (1:N) → result logged → matched ID's stored string (if
+any) typed out → VCC-D off → wait for INT low → re-arm
 ```
 
 ```text
@@ -17,9 +19,9 @@ finger placed → INT rising edge → VCC-D on → boot confirmed → PS_HandSha
 → PS_AutoEnroll / PS_DeleteChar / PS_Empty → result logged → VCC-D off → re-arm
 ```
 
-**Not implemented yet**: keystroke/macro output on match, password storage,
-Web Serial UI, battery-life optimization, multiple sensors. See "Roadmap"
-below.
+**Not implemented yet**: Web Serial browser UI (the serial RPC backend it
+would talk to is implemented; see below), battery-life optimization,
+multiple sensors, uppercase/symbol output characters. See "Roadmap" below.
 
 ## Hardware
 
@@ -111,6 +113,35 @@ are required).
 };
 ```
 
+If using `CONFIG_ZW3021_STORAGE`, also carve out a dedicated flash
+partition (needed once per board, not per sensor instance):
+
+```dts
+&flash0 {
+    partitions {
+        compatible = "fixed-partitions";
+        #address-cells = <1>;
+        #size-cells = <1>;
+
+        /* Shrunk to make room for zw3021_partition below. Adjust the
+         * original size/offset to match your board's flash layout. */
+        code_partition: partition@27000 {
+            reg = <0x00027000 0x000bd000>;
+        };
+
+        zw3021_partition: partition@e4000 {
+            label = "zw3021_storage";
+            reg = <0x000e4000 0x00008000>;
+        };
+
+        storage_partition: partition@ec000 {
+            label = "storage";
+            reg = <0x000ec000 0x00008000>;
+        };
+    };
+};
+```
+
 ### Devicetree properties
 
 | Property | Required | Default | Description |
@@ -163,6 +194,75 @@ request to the sensor's worker thread and returns immediately; a request
 made while one is already running is dropped with a logged warning
 (`-EBUSY`) rather than queued.
 
+## Per-fingerprint-ID keystroke output
+
+On a successful match, the driver looks up a stored output string for that
+fingerprint ID and types it out -- **without the string ever touching git
+or the compiled firmware image**. Two pieces make this work:
+
+### 1. Virtual output keyboard (`CONFIG_ZW3021_STORAGE`)
+
+Typing has to happen on the BLE **central** (only it sends HID reports),
+but the sensor lives on the peripheral. Symmetric to the enroll/delete/
+clear behaviors (which flow central → peripheral), this direction
+(peripheral → central) reuses another existing, unmodified ZMK mechanism:
+raising a `zmk_position_state_changed` event locally on the peripheral is
+automatically forwarded to the central by ZMK's own
+`split_peripheral_listener` (`zmk/app/src/split/peripheral.c`) -- the same
+path real key matrix presses already use
+(`zmk/app/src/physical_layouts.c`).
+
+This requires 36 **virtual key positions** reserved beyond the keyboard's
+real key count (one per `0-9`/`a-z` character), bound on `default_layer` to
+the matching `&kp` keycode and to `&trans` on every other layer -- see
+`boards/shields/mona2/mona2.dtsi`'s `RC(4,N)` transform entries (row 4 is
+never producible by real kscan hardware, which only has 4 physical rows)
+and `mona2.keymap`'s per-layer bindings in `zmk-config-moNa2-v2`. Case and
+symbols aren't supported yet: uppercase letters fold to the same position
+as lowercase (see `zw3021_char_to_offset()` in `src/zw3021.c`).
+
+The string itself is stored in NVS on a dedicated flash partition
+(`zw3021_partition`, see the devicetree section above), keyed by
+fingerprint ID, via `src/storage.c` -- the same pattern as
+`zmk-module-Fingerprint/src/storage.c`.
+
+### 2. Serial RPC (`CONFIG_ZW3021_SERIAL_RPC`)
+
+The only way to get a string into that NVS partition is over a line-based
+JSON RPC server (`src/serial_rpc.c`) on the same USB CDC-ACM console
+already used for logging (requires the `zmk-usb-logging` snippet) --
+modeled on `zmk-module-Fingerprint/src/serial_rpc.c`, simplified to a
+smaller command set and a flatter (unnested) JSON shape so a browser Web
+Serial UI can be connected later without a backend rewrite:
+
+```text
+Request:  {"cmd":"<name>","req_id":<int>,"finger_id":<int>,"value":"<str>"}
+Response: {"ok":true,"req_id":<int>,"data":{...}}
+       or: {"ok":false,"req_id":<int>,"message":"..."}
+```
+
+| Command | Params | Notes |
+|---|---|---|
+| `ping` | — | |
+| `get_status` | — | `data.busy` |
+| `get_fingers` | — | `data.ids`: array of IDs with a stored string |
+| `get_finger` | `finger_id` | `data.value` |
+| `update_finger` | `finger_id`, `value` | writes/overwrites the string |
+| `delete_finger` | `finger_id` | |
+| `enroll_start` | `finger_id` | wraps `zw3021_request_enroll()` |
+| `enroll_status` | — | `data.busy` |
+
+Since logs and RPC responses share one stream, expect them interleaved.
+Test by typing a line directly into the same serial terminal used for
+logs, e.g.:
+
+```text
+{"cmd":"update_finger","req_id":1,"finger_id":1,"value":"hunter2"}
+{"ok":true,"req_id":1,"data":{}}
+```
+
+No browser UI is implemented yet -- see "Roadmap".
+
 ## Kconfig
 
 ```conf
@@ -170,6 +270,8 @@ CONFIG_ZW3021=y                 # the side with the physical sensor only
 CONFIG_ZW3021_ENROLL_BEHAVIOR=y # every side (see below)
 CONFIG_ZW3021_DELETE_BEHAVIOR=y
 CONFIG_ZW3021_CLEAR_BEHAVIOR=y
+CONFIG_ZW3021_STORAGE=y         # the side with the sensor only
+CONFIG_ZW3021_SERIAL_RPC=y      # the side with the sensor only
 ```
 
 `CONFIG_ZW3021_ENROLL_BEHAVIOR` / `_DELETE_BEHAVIOR` / `_CLEAR_BEHAVIOR` must
@@ -247,8 +349,6 @@ No raw fingerprint image, template, or stored-string data is ever logged.
 - `INT` is wired directly to the XIAO nRF52840 module rather than through
   the board's standard D0–D10 header; verify this wiring against your own
   hardware before flashing.
-- No keystroke/macro output on a successful match — authentication and
-  enrollment results only reach the log.
 - Only one enroll/delete/clear request is queued at a time; a request made
   while another is running is dropped (logged, not queued).
 - `PS_AutoEnroll`'s per-capture reporting is only partially documented
@@ -256,12 +356,18 @@ No raw fingerprint image, template, or stored-string data is ever logged.
   real hardware for the success path (enroll → identify → match); the
   various failure confirm codes (duplicate ID, full database, etc.) are
   implemented per the protocol manual but not individually exercised.
+- Output strings are lowercase-alphanumeric only (no uppercase, symbols,
+  or spaces); see `zw3021_char_to_offset()` in `src/zw3021.c`.
+- `get_fingers` finds stored IDs by scanning 1..100 and checking each with
+  `nvs_read` -- fine at this scale, but not how you'd enumerate a much
+  larger ID space.
+- The serial RPC server has not yet been tested against a real client
+  (only manually-typed JSON lines); no browser Web Serial UI exists yet.
 
 ## Roadmap
 
 ```text
-Phase 2: &zw3021_touchpass-style manual auth trigger, keystroke/macro output on match
-Phase 4: Web Serial config, ZMK settings/NVS storage (see zmk-module-Fingerprint for prior art)
+Phase 4: Web Serial browser UI talking to the existing serial RPC backend (see zmk-module-Fingerprint's config.html for prior art)
 Phase 5: Split keyboard peripheral integration, central event forwarding
 ```
 

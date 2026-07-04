@@ -22,3 +22,30 @@ config ZW3021_DELETE_BEHAVIOR
 
 config ZW3021_CLEAR_BEHAVIOR
     bool "ZW3021 fingerprint database clear behavior"
+
+if ZW3021
+
+config ZW3021_STORAGE
+    bool "Per-fingerprint-ID output string storage (NVS)"
+    select NVS
+    help
+      Stores one output string per fingerprint ID in a dedicated flash
+      partition ("zw3021_partition", must be defined by the board/shield
+      overlay -- see boards/shields/mona2/mona2_l.overlay in
+      zmk-config-moNa2-v2 for the reference layout). On a successful
+      PS_AutoIdentify match, the stored string is typed out character by
+      character via a reserved block of virtual keymap positions. Strings
+      are only ever written at runtime over the serial RPC interface
+      (CONFIG_ZW3021_SERIAL_RPC); they never appear in git or in the
+      compiled firmware image.
+
+config ZW3021_SERIAL_RPC
+    bool "Serial RPC for managing per-ID output strings"
+    depends on ZW3021_STORAGE
+    help
+      Adds a line-based JSON RPC server on the same USB CDC-ACM console
+      used for logging (requires the zmk-usb-logging snippet). Lets you
+      read/write/delete per-fingerprint-ID output strings and trigger
+      enrollment without needing to flash new firmware or touch git.
+
+endif # ZW3021

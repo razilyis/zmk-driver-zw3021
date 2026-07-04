@@ -6,9 +6,14 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /* Returns 0 if queued, -EBUSY if a request is already pending/running. */
 int zw3021_request_enroll(uint16_t id);
 int zw3021_request_delete(uint16_t id);
 int zw3021_request_clear(void);
+
+/* True while an enroll/delete/clear request (or an INT-triggered identify)
+ * is queued or actively running. */
+bool zw3021_is_busy(void);
