@@ -1,4 +1,7 @@
-if(CONFIG_ZW3021)
-    zephyr_library()
-    zephyr_library_sources(src/zw3021.c)
-endif()
+zephyr_library()
+zephyr_library_include_directories(include)
+
+zephyr_library_sources_ifdef(CONFIG_ZW3021 src/zw3021.c)
+zephyr_library_sources_ifdef(CONFIG_ZW3021_ENROLL_BEHAVIOR src/behavior_zw3021_enroll.c)
+zephyr_library_sources_ifdef(CONFIG_ZW3021_DELETE_BEHAVIOR src/behavior_zw3021_delete.c)
+zephyr_library_sources_ifdef(CONFIG_ZW3021_CLEAR_BEHAVIOR src/behavior_zw3021_clear.c)

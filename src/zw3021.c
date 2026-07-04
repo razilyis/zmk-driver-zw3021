@@ -3,10 +3,18 @@
  *
  * On INT rising edge: power on VCC-D, confirm boot, PS_HandShake,
  * PS_AutoIdentify (1:N), log the result, power off VCC-D, and wait for
- * INT to return low before re-arming. No behavior/keystroke output.
+ * INT to return low before re-arming.
+ *
+ * Enrollment/delete/clear (PS_AutoEnroll/PS_DeleteChar/PS_Empty) are
+ * triggered separately via zw3021_request_*() (called from the
+ * BEHAVIOR_LOCALITY_GLOBAL behaviors in behavior_zw3021_*.c) and are
+ * queued to the same worker thread, so they never run concurrently with
+ * an INT-triggered identify.
  */
 
 #define DT_DRV_COMPAT razilyis_zw3021
+
+#include "zw3021.h"
 
 #include <errno.h>
 #include <string.h>
@@ -31,10 +39,13 @@ BUILD_ASSERT(DT_NUM_INST_STATUS_OKAY(DT_DRV_COMPAT) <= 1, "zw3021: only one inst
 #define ZW3021_PKT_ID_ACK 0x07
 #define ZW3021_CMD_HANDSHAKE 0x35
 #define ZW3021_CMD_AUTO_IDENTIFY 0x32
+#define ZW3021_CMD_AUTO_ENROLL 0x31
+#define ZW3021_CMD_DELETE_CHAR 0x0C
+#define ZW3021_CMD_EMPTY 0x0D
 #define ZW3021_BOOT_BYTE 0x55
 
 /* Not exposed via devicetree: fixed protocol timing, not board wiring. */
-#define ZW3021_HANDSHAKE_RX_TIMEOUT_MS 200
+#define ZW3021_QUICK_CMD_TIMEOUT_MS 200
 #define ZW3021_REARM_POLL_MS 20
 
 #define ZW3021_RX_BUF_LEN 16
@@ -46,7 +57,20 @@ struct zw3021_config {
     uint32_t power_on_delay_ms;
     uint32_t startup_timeout_ms;
     uint32_t identify_timeout_ms;
+    uint32_t enroll_timeout_ms;
     uint8_t score_level;
+    uint8_t enroll_times;
+};
+
+enum zw3021_request_type {
+    ZW3021_REQ_ENROLL,
+    ZW3021_REQ_DELETE,
+    ZW3021_REQ_CLEAR,
+};
+
+struct zw3021_request {
+    enum zw3021_request_type type;
+    uint16_t id;
 };
 
 static const struct uart_config zw3021_uart_cfg = {
@@ -61,6 +85,10 @@ static const struct uart_config zw3021_uart_cfg = {
 static const struct device *zw3021_dev;
 static struct gpio_callback zw3021_int_cb;
 K_SEM_DEFINE(zw3021_finger_sem, 0, 1);
+
+static struct zw3021_request zw3021_pending_request;
+static bool zw3021_request_pending;
+K_SEM_DEFINE(zw3021_request_sem, 0, 1);
 
 static void zw3021_uart_send_packet(const struct device *uart_dev, uint8_t packet_id,
                                      const uint8_t *payload, uint16_t payload_len) {
@@ -88,7 +116,7 @@ static void zw3021_uart_send_packet(const struct device *uart_dev, uint8_t packe
 
 static void zw3021_send_command(const struct device *uart_dev, uint8_t cmd, const uint8_t *params,
                                  uint16_t params_len) {
-    uint8_t buf[1 + 5]; /* cmd + largest params used (AutoIdentify: 5 bytes) */
+    uint8_t buf[1 + 5]; /* cmd + largest params used (AutoIdentify/AutoEnroll: 5 bytes) */
 
     __ASSERT_NO_MSG(params_len <= sizeof(buf) - 1);
 
@@ -202,7 +230,7 @@ static int zw3021_handshake(const struct device *uart_dev) {
 
     zw3021_send_command(uart_dev, ZW3021_CMD_HANDSHAKE, NULL, 0);
 
-    int ret = zw3021_recv_packet(uart_dev, rx, sizeof(rx), &rx_len, ZW3021_HANDSHAKE_RX_TIMEOUT_MS);
+    int ret = zw3021_recv_packet(uart_dev, rx, sizeof(rx), &rx_len, ZW3021_QUICK_CMD_TIMEOUT_MS);
     if (ret != 0) {
         return ret;
     }
@@ -265,11 +293,146 @@ static int zw3021_auto_identify(const struct device *uart_dev, uint8_t score_lev
     }
 }
 
-static void zw3021_handle_finger_event(const struct device *dev) {
-    const struct zw3021_config *cfg = dev->config;
+/* Returns 0 on a fully stored enrollment, -ETIMEDOUT, -EBADMSG, or -EIO. */
+static int zw3021_auto_enroll(const struct device *uart_dev, uint16_t id, uint8_t enroll_times,
+                               uint32_t timeout_ms) {
+    /* params = 0x000C:
+     *  bit2=1: don't require per-step status (may not be honored for every
+     *          intermediate capture step -- the receive loop below reads
+     *          until a terminal packet regardless of how many arrive).
+     *  bit3=1: allow overwriting an existing template at this ID, so the
+     *          same test ID can be re-enrolled without deleting first.
+     *  bit4=0: allow the same finger to be enrolled again under another ID
+     *          (convenient when testing with one finger / multiple IDs).
+     *  bit5=0: require lifting the finger between captures (safer default).
+     */
+    uint8_t params[5] = {
+        (uint8_t)(id >> 8), (uint8_t)id, enroll_times, 0x00, 0x0C,
+    };
+    uint8_t rx[ZW3021_RX_BUF_LEN];
+    uint16_t rx_len;
+    int64_t deadline = k_uptime_get() + timeout_ms;
 
+    zw3021_send_command(uart_dev, ZW3021_CMD_AUTO_ENROLL, params, sizeof(params));
+
+    for (;;) {
+        int64_t remaining = deadline - k_uptime_get();
+        if (remaining <= 0) {
+            return -ETIMEDOUT;
+        }
+
+        int ret = zw3021_recv_packet(uart_dev, rx, sizeof(rx), &rx_len, (uint32_t)remaining);
+        if (ret != 0) {
+            return ret;
+        }
+        if (rx_len < 2) {
+            return -EBADMSG;
+        }
+
+        uint8_t confirm = rx[0];
+        uint8_t stage = rx[1];
+
+        /* Per the protocol manual, a feature-generation failure at the
+         * capture stage (07 at stage 02) doesn't end the enrollment: the
+         * sensor goes back to waiting for another successful capture of
+         * the same attempt. Every other non-zero confirm code ends the
+         * flow (matches the manual's explicit "结束流程" for each case).
+         */
+        if (confirm == 0x07 && stage == 0x02) {
+            LOG_WRN("zw3021: enroll: feature generation failed, retrying capture");
+            continue;
+        }
+
+        if (confirm != 0x00) {
+            switch (confirm) {
+            case 0x0B:
+                LOG_WRN("zw3021: enroll: invalid id");
+                break;
+            case 0x1F:
+                LOG_WRN("zw3021: enroll: fingerprint database full");
+                break;
+            case 0x22:
+                LOG_WRN("zw3021: enroll: id already has a template");
+                break;
+            case 0x25:
+                LOG_WRN("zw3021: enroll: invalid enroll-times");
+                break;
+            case 0x26:
+                return -ETIMEDOUT;
+            case 0x27:
+                LOG_WRN("zw3021: enroll: fingerprint already registered under another id");
+                break;
+            case 0x0A:
+                LOG_WRN("zw3021: enroll: template merge failed");
+                break;
+            default:
+                LOG_ERR("zw3021: enroll error, confirm=0x%02x stage=0x%02x", confirm, stage);
+                break;
+            }
+            return -EIO;
+        }
+
+        if (stage == 0x06) {
+            return 0; /* store result: confirm=0x00 at this stage means success */
+        }
+
+        LOG_DBG("zw3021: enroll: stage=0x%02x", stage);
+    }
+}
+
+/* Returns 0 on success, -ETIMEDOUT, -EBADMSG, or -EIO. */
+static int zw3021_delete_char(const struct device *uart_dev, uint16_t page_id, uint16_t n) {
+    uint8_t params[4] = {
+        (uint8_t)(page_id >> 8), (uint8_t)page_id, (uint8_t)(n >> 8), (uint8_t)n,
+    };
+    uint8_t rx[ZW3021_RX_BUF_LEN];
+    uint16_t rx_len;
+
+    zw3021_send_command(uart_dev, ZW3021_CMD_DELETE_CHAR, params, sizeof(params));
+
+    int ret = zw3021_recv_packet(uart_dev, rx, sizeof(rx), &rx_len, ZW3021_QUICK_CMD_TIMEOUT_MS);
+    if (ret != 0) {
+        return ret;
+    }
+    if (rx_len < 1) {
+        return -EBADMSG;
+    }
+    if (rx[0] == 0x00) {
+        return 0;
+    }
+
+    LOG_WRN("zw3021: delete failed, confirm=0x%02x", rx[0]);
+    return -EIO;
+}
+
+/* Returns 0 on success, -ETIMEDOUT, -EBADMSG, or -EIO. */
+static int zw3021_empty_database(const struct device *uart_dev) {
+    uint8_t rx[ZW3021_RX_BUF_LEN];
+    uint16_t rx_len;
+
+    zw3021_send_command(uart_dev, ZW3021_CMD_EMPTY, NULL, 0);
+
+    int ret = zw3021_recv_packet(uart_dev, rx, sizeof(rx), &rx_len, ZW3021_QUICK_CMD_TIMEOUT_MS);
+    if (ret != 0) {
+        return ret;
+    }
+    if (rx_len < 1) {
+        return -EBADMSG;
+    }
+    if (rx[0] == 0x00) {
+        return 0;
+    }
+
+    LOG_WRN("zw3021: clear database failed, confirm=0x%02x", rx[0]);
+    return -EIO;
+}
+
+/* Shared power-on/boot-confirm/handshake preamble used by both the
+ * INT-triggered identify flow and the on-demand enroll/delete/clear
+ * requests. Returns 0 if the sensor is ready for commands.
+ */
+static int zw3021_power_on_and_handshake(const struct zw3021_config *cfg) {
     gpio_pin_set_dt(&cfg->power_en_gpio, 1);
-    LOG_INF("zw3021: finger detected");
     LOG_INF("zw3021: VCC-D enabled");
 
     k_sleep(K_MSEC(cfg->power_on_delay_ms));
@@ -279,57 +442,151 @@ static void zw3021_handle_finger_event(const struct device *dev) {
     int ret = zw3021_handshake(cfg->uart_dev);
     if (ret != 0) {
         LOG_ERR("zw3021: handshake timeout/error: %d", ret);
-        goto power_off;
+        return ret;
     }
     LOG_INF("zw3021: PS_HandShake OK");
+    return 0;
+}
 
-    LOG_INF("zw3021: identify started");
-    uint16_t match_id = 0;
-    uint16_t score = 0;
-    ret = zw3021_auto_identify(cfg->uart_dev, cfg->score_level, cfg->identify_timeout_ms, &match_id,
-                                &score);
-    switch (ret) {
-    case 0:
-        LOG_INF("zw3021: match id=%u score=%u", match_id, score);
-        break;
-    case -ENOENT:
-        /* zw3021_auto_identify() already logged the specific reason
-         * (no match / empty database / empty template). */
-        break;
-    case -ETIMEDOUT:
-        LOG_WRN("zw3021: identify timeout");
-        break;
-    default:
-        LOG_ERR("zw3021: identify error: %d", ret);
-        break;
-    }
-
-power_off:
+/* Shared power-off + re-arm postamble; always runs regardless of how the
+ * preceding command sequence turned out.
+ */
+static void zw3021_power_off_and_rearm(const struct zw3021_config *cfg) {
     gpio_pin_set_dt(&cfg->power_en_gpio, 0);
     LOG_INF("zw3021: VCC-D disabled");
 
-    /* Don't re-arm until the finger is actually lifted, regardless of
-     * which path above was taken. */
     while (gpio_pin_get_dt(&cfg->int_gpio) > 0) {
         k_sleep(K_MSEC(ZW3021_REARM_POLL_MS));
     }
 }
+
+static void zw3021_handle_finger_event(const struct device *dev) {
+    const struct zw3021_config *cfg = dev->config;
+
+    LOG_INF("zw3021: finger detected");
+
+    if (zw3021_power_on_and_handshake(cfg) == 0) {
+        LOG_INF("zw3021: identify started");
+        uint16_t match_id = 0;
+        uint16_t score = 0;
+        int ret = zw3021_auto_identify(cfg->uart_dev, cfg->score_level, cfg->identify_timeout_ms,
+                                        &match_id, &score);
+        switch (ret) {
+        case 0:
+            LOG_INF("zw3021: match id=%u score=%u", match_id, score);
+            break;
+        case -ENOENT:
+            /* zw3021_auto_identify() already logged the specific reason. */
+            break;
+        case -ETIMEDOUT:
+            LOG_WRN("zw3021: identify timeout");
+            break;
+        default:
+            LOG_ERR("zw3021: identify error: %d", ret);
+            break;
+        }
+    }
+
+    zw3021_power_off_and_rearm(cfg);
+}
+
+static void zw3021_handle_request_event(const struct device *dev, const struct zw3021_request *req) {
+    const struct zw3021_config *cfg = dev->config;
+
+    if (zw3021_power_on_and_handshake(cfg) == 0) {
+        switch (req->type) {
+        case ZW3021_REQ_ENROLL: {
+            LOG_INF("zw3021: enroll started, id=%u times=%u", req->id, cfg->enroll_times);
+            int ret =
+                zw3021_auto_enroll(cfg->uart_dev, req->id, cfg->enroll_times, cfg->enroll_timeout_ms);
+            if (ret == 0) {
+                LOG_INF("zw3021: enroll stored id=%u", req->id);
+            } else {
+                LOG_WRN("zw3021: enroll failed: %d", ret);
+            }
+            break;
+        }
+        case ZW3021_REQ_DELETE: {
+            int ret = zw3021_delete_char(cfg->uart_dev, req->id, 1);
+            if (ret == 0) {
+                LOG_INF("zw3021: deleted id=%u", req->id);
+            } else {
+                LOG_WRN("zw3021: delete failed: %d", ret);
+            }
+            break;
+        }
+        case ZW3021_REQ_CLEAR: {
+            int ret = zw3021_empty_database(cfg->uart_dev);
+            if (ret == 0) {
+                LOG_INF("zw3021: database cleared");
+            } else {
+                LOG_WRN("zw3021: clear failed: %d", ret);
+            }
+            break;
+        }
+        }
+    }
+
+    zw3021_power_off_and_rearm(cfg);
+}
+
+static int zw3021_queue_request(enum zw3021_request_type type, uint16_t id) {
+    if (zw3021_request_pending) {
+        LOG_WRN("zw3021: busy, dropping request (type=%d)", type);
+        return -EBUSY;
+    }
+
+    zw3021_pending_request.type = type;
+    zw3021_pending_request.id = id;
+    zw3021_request_pending = true;
+    k_sem_give(&zw3021_request_sem);
+    return 0;
+}
+
+int zw3021_request_enroll(uint16_t id) { return zw3021_queue_request(ZW3021_REQ_ENROLL, id); }
+
+int zw3021_request_delete(uint16_t id) { return zw3021_queue_request(ZW3021_REQ_DELETE, id); }
+
+int zw3021_request_clear(void) { return zw3021_queue_request(ZW3021_REQ_CLEAR, 0); }
 
 static void zw3021_thread_fn(void *p1, void *p2, void *p3) {
     ARG_UNUSED(p1);
     ARG_UNUSED(p2);
     ARG_UNUSED(p3);
 
-    for (;;) {
-        k_sem_take(&zw3021_finger_sem, K_FOREVER);
+    struct k_poll_event events[2] = {
+        K_POLL_EVENT_STATIC_INITIALIZER(K_POLL_TYPE_SEM_AVAILABLE, K_POLL_MODE_NOTIFY_ONLY,
+                                         &zw3021_finger_sem, 0),
+        K_POLL_EVENT_STATIC_INITIALIZER(K_POLL_TYPE_SEM_AVAILABLE, K_POLL_MODE_NOTIFY_ONLY,
+                                         &zw3021_request_sem, 0),
+    };
 
-        if (zw3021_dev != NULL) {
-            zw3021_handle_finger_event(zw3021_dev);
+    for (;;) {
+        k_poll(events, ARRAY_SIZE(events), K_FOREVER);
+
+        if (events[0].state == K_POLL_STATE_SEM_AVAILABLE) {
+            k_sem_take(&zw3021_finger_sem, K_NO_WAIT);
+            if (zw3021_dev != NULL) {
+                zw3021_handle_finger_event(zw3021_dev);
+            }
         }
 
-        /* Discard any extra triggers queued while we were busy, so a
-         * finger still resting on the sensor doesn't immediately
-         * re-trigger before the INT-low check above has settled. */
+        if (events[1].state == K_POLL_STATE_SEM_AVAILABLE) {
+            k_sem_take(&zw3021_request_sem, K_NO_WAIT);
+            struct zw3021_request req = zw3021_pending_request;
+            if (zw3021_dev != NULL) {
+                zw3021_handle_request_event(zw3021_dev, &req);
+            }
+            zw3021_request_pending = false;
+        }
+
+        events[0].state = K_POLL_STATE_NOT_READY;
+        events[1].state = K_POLL_STATE_NOT_READY;
+
+        /* Discard any extra finger triggers queued while we were busy
+         * (e.g. the finger lifts/places during an enroll's own capture
+         * cycles), so they don't immediately kick off a stray identify.
+         */
         while (k_sem_take(&zw3021_finger_sem, K_NO_WAIT) == 0) {
             /* drain */
         }
@@ -409,7 +666,9 @@ static int zw3021_init(const struct device *dev) {
         .power_on_delay_ms = DT_INST_PROP(inst, power_on_delay_ms),                                 \
         .startup_timeout_ms = DT_INST_PROP(inst, startup_timeout_ms),                               \
         .identify_timeout_ms = DT_INST_PROP(inst, identify_timeout_ms),                             \
+        .enroll_timeout_ms = DT_INST_PROP(inst, enroll_timeout_ms),                                 \
         .score_level = DT_INST_PROP(inst, score_level),                                             \
+        .enroll_times = DT_INST_PROP(inst, enroll_times),                                           \
     };                                                                                              \
                                                                                                      \
     /* Priority 90: run after the GPIO and UART controller drivers. */    \

@@ -2,19 +2,24 @@
 
 ZMK external module driver for the HLK-ZW3021 fingerprint sensor.
 
-## Status: minimal evaluation version
+## Status
 
-This driver only proves out the core sensing loop:
+Phase 1 (auto-identify) and Phase 3 (enroll/delete/clear) are implemented:
 
 ```text
 finger placed → INT rising edge → VCC-D on → boot confirmed → PS_HandShake
 → PS_AutoIdentify (1:N) → result logged → VCC-D off → wait for INT low → re-arm
 ```
 
-**Not implemented in this phase**: behaviors, keystroke/macro output, password
-storage, enrollment/deletion (`PS_AutoEnroll`), Web Serial UI, split
-central/peripheral event forwarding, battery-life optimization, multiple
-sensors. See "Roadmap" below.
+```text
+&zw3021_enroll <id> / &zw3021_delete <id> / &zw3021_clear (keymap behaviors)
+→ queued to the same worker thread → VCC-D on → PS_HandShake
+→ PS_AutoEnroll / PS_DeleteChar / PS_Empty → result logged → VCC-D off → re-arm
+```
+
+**Not implemented yet**: keystroke/macro output on match, password storage,
+Web Serial UI, battery-life optimization, multiple sensors. See "Roadmap"
+below.
 
 ## Hardware
 
@@ -116,6 +121,35 @@ are required).
 | `startup-timeout-ms` | no | 500 | Max wait for the sensor's `0x55` boot byte |
 | `identify-timeout-ms` | no | 12000 | Host-side upper bound for PS_AutoIdentify |
 | `score-level` | no | 3 | PS_AutoIdentify match score level (1–5) |
+| `enroll-times` | no | 3 | Number of finger captures PS_AutoEnroll requires per ID |
+| `enroll-timeout-ms` | no | 60000 | Host-side upper bound for a full PS_AutoEnroll run |
+
+## Enroll / delete / clear behaviors
+
+Three `BEHAVIOR_LOCALITY_GLOBAL` keymap behaviors are provided so they can be
+bound anywhere in a shared keymap on a split build; on the side(s) without
+`CONFIG_ZW3021` (e.g. the BLE central) they're no-ops:
+
+```dts
+zw3021_enroll: behavior_zw3021_enroll {
+    compatible = "razilyis,zw3021-enroll";
+    #binding-cells = <1>;
+};
+zw3021_delete: behavior_zw3021_delete {
+    compatible = "razilyis,zw3021-delete";
+    #binding-cells = <1>;
+};
+zw3021_clear: behavior_zw3021_clear {
+    compatible = "razilyis,zw3021-clear";
+    #binding-cells = <0>;
+};
+```
+
+Keymap usage: `&zw3021_enroll 1` (enroll under ID 1), `&zw3021_delete 1`
+(delete ID 1), `&zw3021_clear` (erase the whole database). Each queues a
+request to the sensor's worker thread and returns immediately; a request
+made while one is already running is dropped with a logged warning
+(`-EBUSY`) rather than queued.
 
 ## Kconfig
 
@@ -123,10 +157,18 @@ are required).
 CONFIG_ZW3021=y
 ```
 
+`CONFIG_ZW3021_ENROLL_BEHAVIOR` / `_DELETE_BEHAVIOR` / `_CLEAR_BEHAVIOR` are
+auto-enabled from the devicetree (`$(dt_compat_enabled,...)`) and don't need
+to be set manually.
+
 ## Build
 
 Add this repository to the consuming config's `west.yml` as a project, then
-enable `CONFIG_ZW3021=y` in the target shield's `.conf` file.
+enable `CONFIG_ZW3021=y` in the target shield's `.conf` file. On a split
+build, instantiate the three behavior nodes above in a devicetree file
+shared by every side (not just the one with the sensor), since the
+enroll/delete/clear bindings must exist in every side's keymap build for the
+`BEHAVIOR_LOCALITY_GLOBAL` split forwarding to reach the sensor's side.
 
 ## Expected log output
 
@@ -141,6 +183,17 @@ enable `CONFIG_ZW3021=y` in the target shield's `.conf` file.
 [INF] zw3021: VCC-D disabled
 ```
 
+Enrolling (success):
+
+```text
+[INF] zw3021: VCC-D enabled
+[INF] zw3021: boot handshake byte received
+[INF] zw3021: PS_HandShake OK
+[INF] zw3021: enroll started, id=1 times=3
+[INF] zw3021: enroll stored id=1
+[INF] zw3021: VCC-D disabled
+```
+
 On errors:
 
 ```text
@@ -149,6 +202,10 @@ On errors:
 [WRN] zw3021: no matching fingerprint
 [WRN] zw3021: identify timeout
 [ERR] zw3021: invalid checksum
+[WRN] zw3021: enroll: feature generation failed, retrying capture
+[WRN] zw3021: enroll: id already has a template
+[WRN] zw3021: enroll failed: -5
+[WRN] zw3021: busy, dropping request (type=0)
 ```
 
 No raw fingerprint image, template, or stored-string data is ever logged.
@@ -161,13 +218,19 @@ No raw fingerprint image, template, or stored-string data is ever logged.
 - `INT` is wired directly to the XIAO nRF52840 module rather than through
   the board's standard D0–D10 header; verify this wiring against your own
   hardware before flashing.
-- No behavior/keystroke output — authentication results only reach the log.
+- No keystroke/macro output on a successful match — authentication and
+  enrollment results only reach the log.
+- Only one enroll/delete/clear request is queued at a time; a request made
+  while another is running is dropped (logged, not queued).
+- `PS_AutoEnroll`'s per-capture reporting is only partially documented
+  (see the comment above `zw3021_auto_enroll()`); the receive loop is
+  written to work whether the sensor sends one final packet or several,
+  but hasn't been exercised against every failure path on real hardware.
 
 ## Roadmap
 
 ```text
-Phase 2: &zw3021_touchpass behavior, manual auth trigger, keystroke/macro output on match
-Phase 3: PS_AutoEnroll, enroll/delete/clear, per-fingerprint-ID actions
+Phase 2: &zw3021_touchpass-style manual auth trigger, keystroke/macro output on match
 Phase 4: Web Serial config, ZMK settings/NVS storage (see zmk-module-Fingerprint for prior art)
 Phase 5: Split keyboard peripheral integration, central event forwarding
 ```

@@ -1,0 +1,8 @@
+description: |
+  Delete the ZW3021 fingerprint template stored at the given ID.
+  BEHAVIOR_LOCALITY_GLOBAL: on a split build this runs on every side; only
+  the side with CONFIG_ZW3021 (the physical sensor) actually does anything.
+
+compatible: "razilyis,zw3021-delete"
+
+include: one_param.yaml

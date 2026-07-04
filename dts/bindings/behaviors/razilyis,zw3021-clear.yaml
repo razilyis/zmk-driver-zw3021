@@ -1,0 +1,8 @@
+description: |
+  Erase the entire ZW3021 fingerprint database (PS_Empty).
+  BEHAVIOR_LOCALITY_GLOBAL: on a split build this runs on every side; only
+  the side with CONFIG_ZW3021 (the physical sensor) actually does anything.
+
+compatible: "razilyis,zw3021-clear"
+
+include: zero_param.yaml

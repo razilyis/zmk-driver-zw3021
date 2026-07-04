@@ -1,0 +1,8 @@
+description: |
+  Start ZW3021 fingerprint enrollment for the given ID (1:1 slot).
+  BEHAVIOR_LOCALITY_GLOBAL: on a split build this runs on every side; only
+  the side with CONFIG_ZW3021 (the physical sensor) actually does anything.
+
+compatible: "razilyis,zw3021-enroll"
+
+include: one_param.yaml

@@ -5,5 +5,21 @@ menuconfig ZW3021
       Minimal evaluation driver for the HLK-ZW3021 fingerprint sensor.
       On finger placement (INT rising edge) it powers the sensor,
       performs PS_HandShake + PS_AutoIdentify (1:N match) over UART,
-      and logs the result. No behavior/keystroke output is implemented
-      in this phase.
+      and logs the result. Enrollment/delete/clear are driven separately
+      via the behaviors below and queued to the same driver instance.
+
+# These are BEHAVIOR_LOCALITY_GLOBAL behaviors: on a split build they run
+# on every side, including ones without CONFIG_ZW3021 (e.g. the BLE
+# central), where they just no-op. So they're auto-enabled from the
+# devicetree instead of depending on CONFIG_ZW3021.
+config ZW3021_ENROLL_BEHAVIOR
+    bool "ZW3021 fingerprint enroll behavior"
+    default $(dt_compat_enabled,$(DT_COMPAT_RAZILYIS_ZW3021_ENROLL))
+
+config ZW3021_DELETE_BEHAVIOR
+    bool "ZW3021 fingerprint delete behavior"
+    default $(dt_compat_enabled,$(DT_COMPAT_RAZILYIS_ZW3021_DELETE))
+
+config ZW3021_CLEAR_BEHAVIOR
+    bool "ZW3021 fingerprint database clear behavior"
+    default $(dt_compat_enabled,$(DT_COMPAT_RAZILYIS_ZW3021_CLEAR))

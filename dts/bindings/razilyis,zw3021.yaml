@@ -46,3 +46,17 @@ properties:
     type: int
     default: 3
     description: PS_AutoIdentify match score level (1-5, 5 is strictest).
+
+  enroll-times:
+    type: int
+    default: 3
+    description: Number of finger captures PS_AutoEnroll requires per ID.
+
+  enroll-timeout-ms:
+    type: int
+    default: 60000
+    description: |
+      Host-side upper bound for a full PS_AutoEnroll run (all captures,
+      merge, and store). The sensor has its own per-capture internal
+      timeout (~8s by default, shared with PS_AutoIdentify's); this is a
+      safety margin above enroll-times full capture/re-attempt cycles.
