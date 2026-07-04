@@ -1,0 +1,676 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZW3021 設定</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-border: #2a2f3a;
+    --text: #e6e8ec;
+    --text-dim: #8b93a3;
+    --accent: #4f8cff;
+    --accent-dim: #2b3a55;
+    --ok: #3ecf6e;
+    --err: #e5484d;
+    --warn: #e5a144;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    justify-content: center;
+  }
+  main {
+    width: 100%;
+    max-width: 480px;
+    padding: 24px 16px 64px;
+  }
+  h1 { font-size: 1.3rem; margin: 0 0 4px; }
+  .subtitle { color: var(--text-dim); font-size: 0.9rem; margin: 0 0 24px; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .card h2 {
+    font-size: 1rem;
+    margin: 0 0 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  button {
+    background: var(--accent-dim);
+    color: var(--text);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-size: 0.9rem;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: var(--accent); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.danger { border-color: var(--err); }
+  button.danger:hover:not(:disabled) { background: var(--err); }
+  input[type=text] {
+    background: #0d0f14;
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 7px 10px;
+    font-size: 0.9rem;
+    width: 100%;
+  }
+  label { font-size: 0.8rem; color: var(--text-dim); display: block; margin-bottom: 4px; }
+  .row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 100px; }
+  .dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    display: inline-block; background: var(--text-dim);
+  }
+  .dot.on { background: var(--ok); }
+  .dot.busy { background: var(--warn); }
+  .dot.off { background: var(--err); }
+  .value-masked { font-family: var(--mono); cursor: pointer; color: var(--text-dim); }
+  .value-shown { font-family: var(--mono); cursor: pointer; }
+  .note { font-size: 0.8rem; color: var(--text-dim); margin-top: 8px; line-height: 1.5; }
+
+  /* ---- finger slot grid ---- */
+  .slot-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 8px;
+  }
+  .slot-btn {
+    background: #0d0f14;
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 10px 2px;
+    text-align: center;
+    cursor: pointer;
+    color: var(--text);
+  }
+  .slot-btn .slot-num { font-size: 1.15rem; font-weight: 600; }
+  .slot-btn .slot-status { font-size: 0.68rem; color: var(--text-dim); margin-top: 4px; }
+  .slot-btn.filled { border-color: var(--ok); }
+  .slot-btn.selected { border-color: var(--accent); background: var(--accent-dim); }
+  .slot-detail {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--panel-border);
+  }
+  .slot-detail h3 { font-size: 0.95rem; margin: 0 0 12px; }
+
+  #connectScreen { text-align: center; padding: 60px 16px; }
+  #connectScreen p { color: var(--text-dim); max-width: 420px; margin: 12px auto 24px; line-height: 1.5; }
+  #app { display: none; }
+  #app.visible { display: block; }
+  #debugLog {
+    background: #0a0c10;
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 8px;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    height: 160px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .log-tx { color: var(--accent); }
+  .log-rx { color: var(--ok); }
+  .log-fw { color: var(--text-dim); }
+  .log-err { color: var(--err); }
+  .toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: var(--panel); border: 1px solid var(--panel-border);
+    padding: 10px 16px; border-radius: 8px; font-size: 0.85rem;
+    display: none;
+    z-index: 200;
+  }
+  .toast.error { border-color: var(--err); color: var(--err); }
+
+  /* ---- enroll modal ---- */
+  .modal-overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6);
+    align-items: center; justify-content: center;
+    z-index: 100;
+    padding: 16px;
+  }
+  .modal-overlay.visible { display: flex; }
+  .modal {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 12px;
+    padding: 24px;
+    width: 100%;
+    max-width: 340px;
+    text-align: center;
+  }
+  .modal h3 { margin: 0 0 16px; font-size: 1rem; }
+  .fingerprint-icon {
+    width: 84px; height: 84px;
+    margin: 0 auto 18px;
+    position: relative;
+    animation: fp-pulse 1.6s ease-in-out infinite;
+  }
+  .fingerprint-icon .ring {
+    position: absolute; top: 50%; left: 50%;
+    border: 3px solid var(--accent);
+    border-left-color: transparent;
+    border-right-color: transparent;
+    border-radius: 50%;
+    transform-origin: center;
+  }
+  .fingerprint-icon .ring:nth-child(1) { width: 84px; height: 84px; margin: -42px 0 0 -42px; transform: rotate(15deg); }
+  .fingerprint-icon .ring:nth-child(2) { width: 64px; height: 64px; margin: -32px 0 0 -32px; transform: rotate(-20deg); }
+  .fingerprint-icon .ring:nth-child(3) { width: 44px; height: 44px; margin: -22px 0 0 -22px; transform: rotate(40deg); }
+  .fingerprint-icon .ring:nth-child(4) { width: 24px; height: 24px; margin: -12px 0 0 -12px; transform: rotate(-60deg); }
+  .fingerprint-icon.done { animation: none; }
+  .fingerprint-icon.done .ring { border-color: var(--ok); border-left-color: transparent; border-right-color: transparent; }
+  @keyframes fp-pulse {
+    0%, 100% { transform: scale(1); opacity: 0.75; }
+    50% { transform: scale(1.08); opacity: 1; }
+  }
+  .modal-text { font-size: 0.88rem; line-height: 1.6; margin: 0 0 6px; }
+  .modal-elapsed { font-size: 0.78rem; color: var(--text-dim); margin: 0 0 18px; }
+  .modal-actions { display: flex; justify-content: center; }
+</style>
+</head>
+<body>
+<main>
+  <h1>ZW3021 設定</h1>
+  <p class="subtitle">指紋センサー: USBシリアル経由で指ごとの出力文字列と登録を管理します。</p>
+
+  <div id="connectScreen">
+    <button id="connectBtn">デバイスに接続</button>
+    <p>
+      Chrome または Edge 89以上(Web Serial API)、かつsecure context
+      (HTTPS・localhost・ローカルファイル)が必要です。ZW3021センサーが
+      付いているキーボードの半分をUSB接続してから「接続」をクリックし、
+      ブラウザのデバイス選択ダイアログでそのシリアルポートを選んでください。
+    </p>
+  </div>
+
+  <div id="app">
+    <div class="card">
+      <h2><span id="connDot" class="dot"></span> <span id="connLabel">未接続</span></h2>
+      <div class="row">
+        <div><span class="dot" id="busyDot"></span> <span id="busyLabel">状態不明</span></div>
+        <div style="text-align:right;"><button id="disconnectBtn">切断</button></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>指スロット</h2>
+      <p class="note">
+        下の「文字列設定済み/未設定」は<strong>出力文字列がNVSに保存されて
+        いるかどうか</strong>だけを表します。センサー側の指紋テンプレート
+        登録状態(<code>&amp;zw3021_enroll</code>キーやこの画面の「指を登録」
+        で行うもの)とは別管理で、Web UIから指紋テンプレートの登録状態を
+        直接確認する手段は現状ありません(実機ログの
+        <code>zw3021: enroll stored id=N</code> で確認してください)。
+      </p>
+      <div class="slot-grid" id="slotGrid"></div>
+
+      <div class="slot-detail" id="slotDetail" style="display:none;">
+        <h3 id="slotDetailTitle">指 1</h3>
+        <div>
+          <label>出力文字列 <span id="slotValueDisplay" class="value-masked"></span></label>
+        </div>
+        <div class="row" style="margin-top:6px;">
+          <div style="flex:2;">
+            <input type="text" id="slotValueInput" placeholder="半角英小文字と数字のみ">
+          </div>
+          <div><button id="slotSaveBtn">保存</button></div>
+        </div>
+        <div class="row" style="margin-top:10px;">
+          <div><button id="slotEnrollBtn">指を登録</button></div>
+          <div style="text-align:right;"><button id="slotDeleteBtn" class="danger">文字列を削除</button></div>
+        </div>
+        <p class="note">
+          「指を登録」はセンサーへの指紋登録(PS_AutoEnroll)、
+          「文字列を削除」は保存済みの出力文字列を消すだけです。
+          指紋テンプレート自体を消すには実機の <code>&amp;zw3021_delete</code>
+          キーマップキーを使ってください(このWeb UIからは行えません)。
+        </p>
+      </div>
+      <div class="note"><button id="refreshFingersBtn">一覧を更新</button></div>
+    </div>
+
+    <div class="card">
+      <h2>出力文字列について</h2>
+      <p class="note">
+        センサー本体のフラッシュ(NVS)にのみ保存されます — このシリアル
+        接続以外でデバイスの外に出ることはなく、このリポジトリに
+        書き込まれることもありません。
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>デバッグログ</h2>
+      <div id="debugLog"></div>
+    </div>
+  </div>
+</main>
+
+<div class="modal-overlay" id="enrollModal">
+  <div class="modal">
+    <h3 id="enrollModalTitle">指 1 を登録</h3>
+    <div class="fingerprint-icon" id="enrollIcon">
+      <div class="ring"></div>
+      <div class="ring"></div>
+      <div class="ring"></div>
+      <div class="ring"></div>
+    </div>
+    <p class="modal-text" id="enrollModalText">登録中... センサーに指を乗せてください</p>
+    <p class="modal-elapsed" id="enrollModalElapsed"></p>
+    <div class="modal-actions">
+      <button id="enrollModalCloseBtn">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+(() => {
+  "use strict";
+
+  const SLOT_IDS = [1, 2, 3, 4, 5];
+  const ENROLL_POLL_MS = 1500;
+  const STATUS_POLL_MS = 2000;
+  const COMMAND_TIMEOUT_MS = 10000;
+
+  /* ---- Minimal serial RPC transport -------------------------------
+   * Protocol (see zmk-driver-zw3021/src/serial_rpc.c):
+   *   Request:  {"cmd":"<name>","req_id":<int>, ...extra flat fields}
+   *   Response: {"ok":true,"req_id":<int>,"data":{...}}
+   *          or {"ok":false,"req_id":<int>,"message":"..."}
+   * Responses share the same USB CDC-ACM stream as ZMK log output, so
+   * any line that doesn't parse as JSON is just firmware log text.
+   * Unlike some other RPC designs, fields here are flat/top-level
+   * (finger_id, value) -- there is no nested "params" object.
+   */
+  class SerialRpc {
+    constructor() {
+      this.port = null;
+      this.reader = null;
+      this.writer = null;
+      this.rxBuffer = "";
+      this.nextReqId = 1;
+      this.pending = new Map();
+      this.onLog = () => {};
+      this.onDisconnect = () => {};
+    }
+
+    async connect() {
+      const port = await navigator.serial.requestPort();
+      await port.open({ baudRate: 115200 });
+      try {
+        await port.setSignals({ dataTerminalReady: true, requestToSend: true });
+      } catch (e) {
+        /* Not every platform/port supports this; harmless if it throws. */
+      }
+      this.port = port;
+      this.reader = port.readable.getReader();
+      this.writer = port.writable.getWriter();
+      this._readLoop();
+    }
+
+    async disconnect() {
+      try { await this.reader?.cancel(); } catch (e) {}
+      try { this.reader?.releaseLock(); } catch (e) {}
+      try { await this.writer?.close(); } catch (e) {}
+      try { await this.port?.close(); } catch (e) {}
+      this.port = null;
+      this.reader = null;
+      this.writer = null;
+      for (const { reject, timeoutId } of this.pending.values()) {
+        clearTimeout(timeoutId);
+        reject(new Error("切断されました"));
+      }
+      this.pending.clear();
+    }
+
+    async _readLoop() {
+      const decoder = new TextDecoder();
+      try {
+        while (true) {
+          const { value, done } = await this.reader.read();
+          if (done) break;
+          this.rxBuffer += decoder.decode(value, { stream: true });
+          let idx;
+          while ((idx = this.rxBuffer.indexOf("\n")) >= 0) {
+            const line = this.rxBuffer.slice(0, idx).replace(/\r$/, "");
+            this.rxBuffer = this.rxBuffer.slice(idx + 1);
+            if (line.length > 0) this._handleLine(line);
+          }
+        }
+      } catch (e) {
+        this.onLog("err", "読み取りエラー: " + e.message);
+      }
+      this.onDisconnect();
+    }
+
+    _handleLine(line) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("{")) {
+        this.onLog("fw", trimmed);
+        return;
+      }
+      let msg;
+      try {
+        msg = JSON.parse(trimmed);
+      } catch (e) {
+        this.onLog("fw", trimmed);
+        return;
+      }
+      this.onLog("rx", trimmed);
+      const entry = this.pending.get(msg.req_id);
+      if (!entry) {
+        if (msg.ok === false) this.onLog("err", "対応するリクエストのないエラー: " + (msg.message || ""));
+        return;
+      }
+      this.pending.delete(msg.req_id);
+      clearTimeout(entry.timeoutId);
+      if (msg.ok) entry.resolve(msg.data || {});
+      else entry.reject(new Error(msg.message || "不明なエラー"));
+    }
+
+    send(cmd, extra) {
+      if (!this.writer) return Promise.reject(new Error("未接続です"));
+      const reqId = this.nextReqId++;
+      const payload = Object.assign({ cmd, req_id: reqId }, extra || {});
+      const line = JSON.stringify(payload);
+
+      return new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          this.pending.delete(reqId);
+          reject(new Error(cmd + " への応答がタイムアウトしました"));
+        }, COMMAND_TIMEOUT_MS);
+        this.pending.set(reqId, { resolve, reject, timeoutId });
+
+        this.onLog("tx", line);
+        const bytes = new TextEncoder().encode(line + "\n");
+        this.writer.write(bytes).catch((e) => {
+          clearTimeout(timeoutId);
+          this.pending.delete(reqId);
+          reject(e);
+        });
+      });
+    }
+  }
+
+  /* ---- UI wiring --------------------------------------------------- */
+
+  const rpc = new SerialRpc();
+  let statusTimer = null;
+  let enrollTimer = null;
+  let enrollElapsedTimer = null;
+  let selectedSlot = null;
+  const slotValues = new Map(); // id -> stored value string (or "" if none)
+
+  const el = (id) => document.getElementById(id);
+  const connectScreen = el("connectScreen");
+  const app = el("app");
+  const debugLog = el("debugLog");
+  const toast = el("toast");
+  const slotGrid = el("slotGrid");
+  const slotDetail = el("slotDetail");
+
+  function showToast(message, isError) {
+    toast.textContent = message;
+    toast.className = "toast" + (isError ? " error" : "");
+    toast.style.display = "block";
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(() => { toast.style.display = "none"; }, 4000);
+  }
+
+  function logLine(kind, text) {
+    const line = document.createElement("div");
+    line.className = "log-" + kind;
+    const ts = new Date().toLocaleTimeString();
+    line.textContent = `[${ts}] ${text}`;
+    debugLog.appendChild(line);
+    debugLog.scrollTop = debugLog.scrollHeight;
+    while (debugLog.childNodes.length > 400) debugLog.removeChild(debugLog.firstChild);
+  }
+  rpc.onLog = logLine;
+
+  function setConnected(connected) {
+    el("connDot").className = "dot " + (connected ? "on" : "off");
+    el("connLabel").textContent = connected ? "接続中" : "未接続";
+    connectScreen.style.display = connected ? "none" : "block";
+    app.classList.toggle("visible", connected);
+    if (connected) {
+      startStatusPolling();
+      refreshFingers();
+    } else {
+      stopStatusPolling();
+      clearInterval(enrollTimer);
+      enrollTimer = null;
+      selectedSlot = null;
+      slotDetail.style.display = "none";
+    }
+  }
+
+  rpc.onDisconnect = () => {
+    setConnected(false);
+    showToast("デバイスが切断されました", true);
+  };
+
+  el("connectBtn").addEventListener("click", async () => {
+    if (!("serial" in navigator)) {
+      showToast("Web SerialにはChromeまたはEdge 89以上が必要です", true);
+      return;
+    }
+    try {
+      await rpc.connect();
+      setConnected(true);
+      await rpc.send("ping");
+    } catch (e) {
+      showToast("接続に失敗しました: " + e.message, true);
+    }
+  });
+
+  el("disconnectBtn").addEventListener("click", async () => {
+    await rpc.disconnect();
+    setConnected(false);
+  });
+
+  function startStatusPolling() {
+    stopStatusPolling();
+    const poll = async () => {
+      try {
+        const data = await rpc.send("get_status");
+        el("busyDot").className = "dot " + (data.busy ? "busy" : "on");
+        el("busyLabel").textContent = data.busy ? "動作中" : "待機中";
+      } catch (e) {
+        /* transient - next poll will retry */
+      }
+    };
+    poll();
+    statusTimer = setInterval(poll, STATUS_POLL_MS);
+  }
+  function stopStatusPolling() {
+    clearInterval(statusTimer);
+    statusTimer = null;
+  }
+
+  /* ---- finger slot grid (fixed IDs 1-5) ---- */
+
+  function buildSlotGrid() {
+    slotGrid.innerHTML = "";
+    for (const id of SLOT_IDS) {
+      const btn = document.createElement("div");
+      btn.className = "slot-btn";
+      btn.id = "slot-" + id;
+      btn.innerHTML = `<div class="slot-num">${id}</div><div class="slot-status">...</div>`;
+      btn.addEventListener("click", () => selectSlot(id));
+      slotGrid.appendChild(btn);
+    }
+  }
+  buildSlotGrid();
+
+  function renderSlotStatus(id) {
+    const btn = el("slot-" + id);
+    if (!btn) return;
+    const value = slotValues.get(id) || "";
+    btn.classList.toggle("filled", value.length > 0);
+    btn.classList.toggle("selected", selectedSlot === id);
+    btn.querySelector(".slot-status").textContent = value.length > 0 ? "文字列設定済み" : "文字列未設定";
+  }
+
+  async function refreshFingers() {
+    for (const id of SLOT_IDS) {
+      const btn = el("slot-" + id);
+      if (btn) btn.querySelector(".slot-status").textContent = "...";
+    }
+    for (const id of SLOT_IDS) {
+      try {
+        const data = await rpc.send("get_finger", { finger_id: id });
+        slotValues.set(id, data.value || "");
+      } catch (e) {
+        slotValues.set(id, "");
+      }
+      renderSlotStatus(id);
+    }
+    if (selectedSlot !== null) showSlotDetail(selectedSlot);
+  }
+  el("refreshFingersBtn").addEventListener("click", refreshFingers);
+
+  function maskValue(value) {
+    return "•".repeat(Math.min(value.length, 12)) || "(空)";
+  }
+
+  function selectSlot(id) {
+    selectedSlot = id;
+    for (const otherId of SLOT_IDS) renderSlotStatus(otherId);
+    showSlotDetail(id);
+  }
+
+  function showSlotDetail(id) {
+    const value = slotValues.get(id) || "";
+    el("slotDetailTitle").textContent = `指 ${id}`;
+    const display = el("slotValueDisplay");
+    display.className = "value-masked";
+    display.textContent = maskValue(value);
+    display.title = "クリックで表示";
+    display.onclick = () => {
+      const shown = display.className === "value-shown";
+      display.className = shown ? "value-masked" : "value-shown";
+      display.textContent = shown ? maskValue(value) : (value || "(空)");
+    };
+    el("slotValueInput").value = value;
+    slotDetail.style.display = "block";
+  }
+
+  el("slotSaveBtn").addEventListener("click", async () => {
+    if (selectedSlot === null) return;
+    const id = selectedSlot;
+    const value = el("slotValueInput").value;
+    if (!value) { showToast("保存する値を入力してください", true); return; }
+    try {
+      await rpc.send("update_finger", { finger_id: id, value });
+      showToast(`指${id}を保存しました`);
+      slotValues.set(id, value);
+      renderSlotStatus(id);
+      showSlotDetail(id);
+    } catch (e) {
+      showToast("保存に失敗しました: " + e.message, true);
+    }
+  });
+
+  el("slotDeleteBtn").addEventListener("click", async () => {
+    if (selectedSlot === null) return;
+    const id = selectedSlot;
+    if (!confirm(`指${id}の保存された文字列を削除しますか?(指紋テンプレート自体は消えません)`)) return;
+    try {
+      await rpc.send("delete_finger", { finger_id: id });
+      showToast(`指${id}の文字列を削除しました`);
+      slotValues.set(id, "");
+      renderSlotStatus(id);
+      showSlotDetail(id);
+    } catch (e) {
+      showToast("削除に失敗しました: " + e.message, true);
+    }
+  });
+
+  /* ---- enroll modal ---- */
+
+  const enrollModal = el("enrollModal");
+  const enrollIcon = el("enrollIcon");
+  const enrollModalText = el("enrollModalText");
+  const enrollModalElapsed = el("enrollModalElapsed");
+
+  el("slotEnrollBtn").addEventListener("click", async () => {
+    if (selectedSlot === null) return;
+    const id = selectedSlot;
+    try {
+      await rpc.send("enroll_start", { finger_id: id });
+    } catch (e) {
+      showToast("登録の開始に失敗しました: " + e.message, true);
+      return;
+    }
+    openEnrollModal(id);
+  });
+
+  function openEnrollModal(id) {
+    el("enrollModalTitle").textContent = `指 ${id} を登録`;
+    enrollIcon.classList.remove("done");
+    enrollModalText.textContent = "登録中... センサーに指を乗せてください(合図があったら離し、再度乗せてください)";
+    const startedAt = Date.now();
+    const updateElapsed = () => {
+      const secs = Math.floor((Date.now() - startedAt) / 1000);
+      enrollModalElapsed.textContent = `経過時間: ${secs}秒 (最大約60秒、複数回のキャプチャが必要です)`;
+    };
+    updateElapsed();
+    clearInterval(enrollElapsedTimer);
+    enrollElapsedTimer = setInterval(updateElapsed, 1000);
+    enrollModal.classList.add("visible");
+
+    clearInterval(enrollTimer);
+    enrollTimer = setInterval(async () => {
+      try {
+        const data = await rpc.send("enroll_status");
+        if (!data.busy) {
+          clearInterval(enrollTimer);
+          enrollTimer = null;
+          clearInterval(enrollElapsedTimer);
+          enrollElapsedTimer = null;
+          enrollIcon.classList.add("done");
+          enrollModalText.textContent = "登録処理が終了しました。" +
+            "成功/失敗の詳細はセンサーのログでのみ確認できます(このRPCは区別しません)。";
+          enrollModalElapsed.textContent = "下の一覧を更新して結果を確認してください。";
+          if (selectedSlot !== null) refreshFingers();
+        }
+      } catch (e) {
+        /* transient - next poll will retry */
+      }
+    }, ENROLL_POLL_MS);
+  }
+
+  el("enrollModalCloseBtn").addEventListener("click", () => {
+    enrollModal.classList.remove("visible");
+    clearInterval(enrollElapsedTimer);
+    enrollElapsedTimer = null;
+    clearInterval(enrollTimer);
+    enrollTimer = null;
+  });
+})();
+</script>
+</body>
+</html>

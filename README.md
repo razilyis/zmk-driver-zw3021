@@ -4,8 +4,9 @@ ZMK external module driver for the HLK-ZW3021 fingerprint sensor.
 
 ## Status
 
-Phase 1 (auto-identify), Phase 3 (enroll/delete/clear), and Phase 2
-(per-fingerprint-ID keystroke output on match) are implemented:
+Phase 1 (auto-identify), Phase 3 (enroll/delete/clear), Phase 2
+(per-fingerprint-ID keystroke output on match), and Phase 4 (Web Serial
+browser UI, `docs/index.html`) are implemented:
 
 ```text
 finger placed → INT rising edge → VCC-D on → boot confirmed → PS_HandShake
@@ -19,9 +20,8 @@ any) typed out → VCC-D off → wait for INT low → re-arm
 → PS_AutoEnroll / PS_DeleteChar / PS_Empty → result logged → VCC-D off → re-arm
 ```
 
-**Not implemented yet**: Web Serial browser UI (the serial RPC backend it
-would talk to is implemented; see below), battery-life optimization,
-multiple sensors, uppercase/symbol output characters. See "Roadmap" below.
+**Not implemented yet**: battery-life optimization, multiple sensors,
+uppercase/symbol output characters. See "Roadmap" below.
 
 ## Hardware
 
@@ -261,7 +261,31 @@ logs, e.g.:
 {"ok":true,"req_id":1,"data":{}}
 ```
 
-No browser UI is implemented yet -- see "Roadmap".
+## Web Serial UI (`docs/index.html`)
+
+A self-contained, build-free HTML/JS page ([docs/index.html](docs/index.html))
+implements a browser client for the RPC protocol above, using the
+[Web Serial API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Serial_API):
+connect to the sensor side's USB serial port, list/add/edit/delete
+per-finger output strings, and trigger enrollment -- all from a Chrome or
+Edge tab, no software install required.
+
+Requirements:
+- Chrome or Edge 89+ (Web Serial isn't implemented in Firefox/Safari).
+- A [secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts):
+  HTTPS, `localhost`, or opening the file directly (`file://`) all work in
+  Chromium. Serving `docs/` via GitHub Pages (repo Settings → Pages →
+  deploy from branch, folder `/docs`) is the simplest way to get a stable
+  HTTPS URL to share, but is not required -- opening the file locally
+  works too.
+- The RPC responses share the same USB CDC-ACM stream as ZMK's log
+  output (see above); the page ignores any line that isn't valid JSON, so
+  log lines show up in its debug panel but don't interfere with the
+  request/response protocol.
+
+The page never sends anything anywhere except over the local serial
+connection -- there is no server component and no network requests, so
+stored strings never leave the two ends of that USB cable.
 
 ## Kconfig
 
@@ -361,13 +385,17 @@ No raw fingerprint image, template, or stored-string data is ever logged.
 - `get_fingers` finds stored IDs by scanning 1..100 and checking each with
   `nvs_read` -- fine at this scale, but not how you'd enumerate a much
   larger ID space.
-- The serial RPC server has not yet been tested against a real client
-  (only manually-typed JSON lines); no browser Web Serial UI exists yet.
+- The serial RPC server's automated client is new (`docs/index.html`);
+  previously it had only been exercised with manually-typed JSON lines.
+  Confirm end-to-end against real hardware before relying on it.
+- `enroll_status` only reports whether the driver is busy, not
+  success/failure detail for the enrollment attempt in progress -- the
+  Web UI can only tell you when it's done, not whether it succeeded; check
+  the device log or re-check `get_fingers`/`get_finger` afterwards.
 
 ## Roadmap
 
 ```text
-Phase 4: Web Serial browser UI talking to the existing serial RPC backend (see zmk-module-Fingerprint's config.html for prior art)
 Phase 5: Split keyboard peripheral integration, central event forwarding
 ```
 
