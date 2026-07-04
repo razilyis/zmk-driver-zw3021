@@ -179,6 +179,17 @@ a `BEHAVIOR_LOCALITY_GLOBAL` behavior to other split sides if it can first
 resolve the behavior device locally; a side missing it logs `No behavior
 assigned to <position> on layer <N>` and never forwards anything at all.
 
+**Harmless log noise on every peripheral invocation, confirmed working
+despite it:** the peripheral will log `Unhandled command type 1` followed
+by `Failed to invoke behavior <name>: -134` even when the invocation
+succeeded. This is an upstream ZMK bug -- the `INVOKE_BEHAVIOR` case in
+`zmk/app/src/split/peripheral.c`'s `zmk_split_transport_peripheral_command_handler`
+switch statement is missing a `break;`, so it always falls through to
+`default:` (logging the warning and returning `-ENOTSUP`) regardless of
+whether the behavior itself ran successfully. Look for a real error
+(e.g. `-22`/`EINVAL`, meaning the behavior device wasn't found) to tell an
+actual failure apart from this cosmetic one.
+
 ## Build
 
 Add this repository to the consuming config's `west.yml` as a project, then
@@ -241,9 +252,10 @@ No raw fingerprint image, template, or stored-string data is ever logged.
 - Only one enroll/delete/clear request is queued at a time; a request made
   while another is running is dropped (logged, not queued).
 - `PS_AutoEnroll`'s per-capture reporting is only partially documented
-  (see the comment above `zw3021_auto_enroll()`); the receive loop is
-  written to work whether the sensor sends one final packet or several,
-  but hasn't been exercised against every failure path on real hardware.
+  (see the comment above `zw3021_auto_enroll()`). Confirmed working on
+  real hardware for the success path (enroll → identify → match); the
+  various failure confirm codes (duplicate ID, full database, etc.) are
+  implemented per the protocol manual but not individually exercised.
 
 ## Roadmap
 
