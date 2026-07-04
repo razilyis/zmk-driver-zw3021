@@ -130,24 +130,28 @@ Three `BEHAVIOR_LOCALITY_GLOBAL` keymap behaviors are provided so they can be
 bound anywhere in a shared keymap on a split build; on the side(s) without
 `CONFIG_ZW3021` (e.g. the BLE central) they're no-ops.
 
-**Keep the devicetree node names short (≤15 characters)**: ZMK's split
-transport packs the behavior device name into a fixed 16-byte field
-(`zmk/app/include/zmk/split/transport/types.h`, `behavior_dev[16]`) and
-`DEVICE_DT_NAME()` falls back to the node's own name when there's no
-separate `label` property. A longer name gets silently truncated (logged as
-`Truncated behavior label ... before invoking peripheral behavior`) and the
-peripheral can never resolve it, so the request just never arrives:
+**Keep the devicetree node names to 8 characters or less.** The BLE split
+transport's "run behavior" characteristic packs the device name into
+`char behavior_dev[ZMK_SPLIT_RUN_BEHAVIOR_DEV_LEN]` where
+`ZMK_SPLIT_RUN_BEHAVIOR_DEV_LEN` is 9
+(`zmk/app/include/zmk/split/bluetooth/service.h`), and `DEVICE_DT_NAME()`
+falls back to the node's own name when there's no separate `label`
+property. A longer name gets silently truncated (logged as `Truncated
+behavior label ... before invoking peripheral behavior`) and the peripheral
+can never resolve it, so the request just never arrives. The phandle
+labels (used in the keymap as `&zw3021_enroll` etc.) can stay descriptive
+since only the node name itself is transmitted:
 
 ```dts
-zw3021_enroll: zw3021_enroll {
+zw3021_enroll: zwenroll {
     compatible = "razilyis,zw3021-enroll";
     #binding-cells = <1>;
 };
-zw3021_delete: zw3021_delete {
+zw3021_delete: zwdelete {
     compatible = "razilyis,zw3021-delete";
     #binding-cells = <1>;
 };
-zw3021_clear: zw3021_clear {
+zw3021_clear: zwclear {
     compatible = "razilyis,zw3021-clear";
     #binding-cells = <0>;
 };
