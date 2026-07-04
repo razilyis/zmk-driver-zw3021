@@ -40,8 +40,10 @@ LOG_MODULE_REGISTER(zw3021_rpc, CONFIG_ZMK_LOG_LEVEL);
  * (100 per the datasheet); this is just how far get_fingers scans.
  */
 #define ZW3021_RPC_SCAN_MAX_ID 100
-#define ZW3021_RPC_LINE_MAX 96
-#define ZW3021_RPC_RESPONSE_MAX 160
+/* Worst case: {"cmd":"update_finger","req_id":-2147483648,"finger_id":65535,
+ * "value":"<32 chars, fully escaped = 64>"} is ~140 bytes; leave headroom. */
+#define ZW3021_RPC_LINE_MAX 176
+#define ZW3021_RPC_RESPONSE_MAX 224
 
 static const struct device *rpc_dev;
 static char rpc_rx_line[ZW3021_RPC_LINE_MAX];
@@ -289,9 +291,13 @@ static void rpc_thread(void *p1, void *p2, void *p3) {
 
     LOG_INF("zw3021: serial RPC ready");
 
+    int64_t last_rx_time = k_uptime_get();
+
     for (;;) {
         uint8_t b;
+        bool got_byte = false;
         while (uart_poll_in(rpc_dev, &b) == 0) {
+            got_byte = true;
             if (b == '\n' || b == '\r') {
                 if (rpc_rx_pos > 0) {
                     rpc_rx_line[rpc_rx_pos] = '\0';
@@ -305,6 +311,18 @@ static void rpc_thread(void *p1, void *p2, void *p3) {
                 rpc_send_error(-1, "line too long");
             }
         }
+
+        int64_t now = k_uptime_get();
+        if (got_byte) {
+            last_rx_time = now;
+        } else if (rpc_rx_pos > 0 && (now - last_rx_time) > 2000) {
+            /* A message sent without a line ending (or cut off mid-send)
+             * would otherwise sit here forever, silently corrupting the
+             * next real message that arrives. */
+            LOG_WRN("zw3021: RPC: discarding stale partial line (no newline received)");
+            rpc_rx_pos = 0;
+        }
+
         k_sleep(K_MSEC(20));
     }
 }
