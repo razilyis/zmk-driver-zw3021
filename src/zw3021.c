@@ -249,6 +249,7 @@ static int zw3021_auto_identify(const struct device *uart_dev, uint8_t score_lev
         *out_score = (rx[4] << 8) | rx[5];
         return 0;
     case 0x09: /* no matching fingerprint */
+        LOG_WRN("zw3021: no matching fingerprint");
         return -ENOENT;
     case 0x24: /* fingerprint database empty */
         LOG_WRN("zw3021: fingerprint database empty");
@@ -292,7 +293,8 @@ static void zw3021_handle_finger_event(const struct device *dev) {
         LOG_INF("zw3021: match id=%u score=%u", match_id, score);
         break;
     case -ENOENT:
-        LOG_WRN("zw3021: no matching fingerprint");
+        /* zw3021_auto_identify() already logged the specific reason
+         * (no match / empty database / empty template). */
         break;
     case -ETIMEDOUT:
         LOG_WRN("zw3021: identify timeout");
