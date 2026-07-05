@@ -218,7 +218,7 @@
     <div class="card">
       <h2><span id="connDot" class="dot"></span> <span id="connLabel">未接続</span></h2>
       <div class="row">
-        <div><span class="dot" id="busyDot"></span> <span id="busyLabel">状態不明</span></div>
+        <div><span class="dot" id="busyDot"></span> ステータス: <span id="busyLabel">不明</span></div>
         <div style="text-align:right;"><button id="disconnectBtn">切断</button></div>
       </div>
     </div>
@@ -330,6 +330,7 @@
    */
   class SerialRpc {
     constructor() {
+      this.label = "USB";
       this.port = null;
       this.reader = null;
       this.writer = null;
@@ -454,6 +455,7 @@
 
   class BluetoothRpc {
     constructor() {
+      this.label = "Bluetooth";
       this.device = null;
       this.requestChar = null;
       this.responseChar = null;
@@ -644,7 +646,7 @@
 
   function setConnected(connected) {
     el("connDot").className = "dot " + (connected ? "on" : "off");
-    el("connLabel").textContent = connected ? "接続中" : "未接続";
+    el("connLabel").textContent = connected ? `${rpc.label}: 接続中` : "未接続";
     connectScreen.style.display = connected ? "none" : "block";
     app.classList.toggle("visible", connected);
     if (connected) {
