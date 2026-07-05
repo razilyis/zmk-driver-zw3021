@@ -486,13 +486,14 @@ No raw fingerprint image, template, or stored-string data is ever logged.
 - `get_fingers` finds stored IDs by scanning 1..100 and checking each with
   `nvs_read` -- fine at this scale, but not how you'd enumerate a much
   larger ID space.
-- The serial RPC server's automated client is new (`docs/index.html`);
-  previously it had only been exercised with manually-typed JSON lines.
-  Confirm end-to-end against real hardware before relying on it.
-- The standalone BLE RPC (`CONFIG_ZW3021_BLE_RPC`) is new and not yet
-  confirmed on real hardware: whether a second simultaneous BLE
-  connection/advertising set actually coexists cleanly with the existing
-  split link on the peripheral half needs real-hardware verification.
+- The standalone BLE RPC (`CONFIG_ZW3021_BLE_RPC`) needs a few seconds
+  after connecting before sensor operations (enrollment) are reliable:
+  the driver requests a much longer BLE connection interval on connect
+  (see "Standalone BLE RPC" above) to stop it from disrupting the
+  sensor's UART timing, and that renegotiation takes a few seconds to
+  land. `docs/index.html` disables the enroll button and shows a
+  countdown for the first 6 seconds after a Bluetooth connection to
+  cover this; USB has no such warm-up period.
 - `enroll_status` only reports whether the driver is busy, not
   success/failure detail for the enrollment attempt in progress -- the
   Web UI can only tell you when it's done, not whether it succeeded; check
