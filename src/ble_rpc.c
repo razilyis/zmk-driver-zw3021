@@ -236,10 +236,35 @@ static void schedule_advertising_start(uint32_t delay_ms) {
     k_work_schedule(&start_adv_work, K_MSEC(delay_ms));
 }
 
+/* Default BLE connection parameters service a connection event every
+ * 30-50ms with zero peripheral latency -- i.e. the radio needs
+ * high-priority interrupt time roughly 20-30 times per second for the
+ * entire lifetime of the connection, not just while data is flowing.
+ * Confirmed on real hardware: this alone (no notifications/polling
+ * needed) was enough to make the ZW3021's PS_HandShake response never
+ * arrive, even with its own receive timeout raised to a full second.
+ * This is just a background config console with no latency
+ * requirements, so trade connection responsiveness for a much longer
+ * interval + peripheral latency, freeing up the CPU for the sensor's
+ * UART timing. Supervision timeout must exceed
+ * (1 + latency) * interval_max * 2 (spec-mandated slack included below).
+ */
+#define BLE_RPC_CONN_INTERVAL_MIN 400 /* 500ms (units of 1.25ms) */
+#define BLE_RPC_CONN_INTERVAL_MAX 800 /* 1000ms */
+#define BLE_RPC_CONN_LATENCY 4
+#define BLE_RPC_CONN_TIMEOUT 1500 /* 15000ms (units of 10ms) */
+
 static void on_ext_adv_connected(struct bt_le_ext_adv *adv, struct bt_le_ext_adv_connected_info *info) {
     ARG_UNUSED(adv);
     ble_rpc_conn = info->conn;
     LOG_INF("zw3021: BLE RPC client connected");
+
+    int err = bt_conn_le_param_update(
+        ble_rpc_conn, BT_LE_CONN_PARAM(BLE_RPC_CONN_INTERVAL_MIN, BLE_RPC_CONN_INTERVAL_MAX,
+                                        BLE_RPC_CONN_LATENCY, BLE_RPC_CONN_TIMEOUT));
+    if (err) {
+        LOG_WRN("zw3021: BLE RPC connection param update request failed: %d", err);
+    }
 }
 
 static struct bt_le_ext_adv_cb ext_adv_cb = {
