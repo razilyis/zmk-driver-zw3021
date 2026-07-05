@@ -100,7 +100,9 @@
   }
   .slot-btn .slot-num { font-size: 1.15rem; font-weight: 600; }
   .slot-btn .slot-status { font-size: 0.68rem; color: var(--text-dim); margin-top: 4px; }
+  .slot-btn .slot-template-status { font-size: 0.68rem; color: var(--text-dim); margin-top: 2px; }
   .slot-btn.filled { border-color: var(--ok); }
+  .slot-btn.templated .slot-template-status { color: var(--ok); }
   .slot-btn.selected { border-color: var(--accent); background: var(--accent-dim); }
   .slot-detail {
     margin-top: 16px;
@@ -227,12 +229,12 @@
     <div class="card">
       <h2>指スロット</h2>
       <p class="note">
-        下の「文字列設定済み/未設定」は<strong>出力文字列がNVSに保存されて
-        いるかどうか</strong>だけを表します。センサー側の指紋テンプレート
-        登録状態(<code>&amp;zw3021_enroll</code>キーやこの画面の「指を登録」
-        で行うもの)とは別管理で、Web UIから指紋テンプレートの登録状態を
-        直接確認する手段は現状ありません(実機ログの
-        <code>zw3021: enroll stored id=N</code> で確認してください)。
+        「文字列設定済み/未設定」は<strong>出力文字列がNVSに保存されて
+        いるかどうか</strong>、「指紋登録済み/指紋未登録」は<strong>センサー
+        本体に指紋テンプレートが保存されているかどうか</strong>を表す、
+        互いに独立した情報です(出力文字列だけ設定して指紋登録前、ということ
+        もあり得ます)。指紋側は「一覧を更新」を押した時にセンサーへ問い合わせて
+        取得するため、直後は「確認中」と表示されることがあります。
       </p>
       <p class="note">
         <strong>この画面から保存済みの文字列そのものを読み出すことは
@@ -318,6 +320,10 @@
   const ENROLL_POLL_MS = 1500;
   const STATUS_POLL_MS = 2000;
   const COMMAND_TIMEOUT_MS = 10000;
+  const ENROLL_MAP_WAIT_MS = 300;
+  const ENROLL_MAP_WAIT_TRIES = 15;
+
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   /* ---- Minimal serial RPC transport -------------------------------
    * Protocol (see zmk-driver-zw3021/src/serial_rpc.c):
@@ -794,7 +800,8 @@
       const btn = document.createElement("div");
       btn.className = "slot-btn";
       btn.id = "slot-" + id;
-      btn.innerHTML = `<div class="slot-num">${id}</div><div class="slot-status">...</div>`;
+      btn.innerHTML = `<div class="slot-num">${id}</div><div class="slot-status">...</div>` +
+        `<div class="slot-template-status">...</div>`;
       btn.addEventListener("click", () => selectSlot(id));
       slotGrid.appendChild(btn);
     }
@@ -806,9 +813,17 @@
     if (!btn) return;
     const info = slotInfo.get(id);
     btn.classList.toggle("filled", !!(info && info.hasValue));
+    btn.classList.toggle("templated", !!(info && info.templateValid && info.hasTemplate));
     btn.classList.toggle("selected", selectedSlot === id);
     btn.querySelector(".slot-status").textContent =
       !info ? "取得失敗(再取得してください)" : info.hasValue ? "文字列設定済み" : "文字列未設定";
+    let templateText = "確認中...";
+    if (info && info.templateValid) {
+      templateText = info.hasTemplate ? "指紋登録済み" : "指紋未登録";
+    } else if (info) {
+      templateText = "指紋:取得失敗";
+    }
+    btn.querySelector(".slot-template-status").textContent = templateText;
   }
 
   // Wrap any RPC-sending action in this: background get_status polling
@@ -831,17 +846,49 @@
   async function refreshFingers() {
     for (const id of SLOT_IDS) {
       const btn = el("slot-" + id);
-      if (btn) btn.querySelector(".slot-status").textContent = "...";
+      if (btn) {
+        btn.querySelector(".slot-status").textContent = "...";
+        btn.querySelector(".slot-template-status").textContent = "確認中...";
+      }
     }
     await withStatusPollingPaused(async () => {
+      // Ask the sensor to re-read its fingerprint-template index table so
+      // get_enrolled below reflects current state, not whatever was last
+      // read (possibly nothing, if this is the first refresh since
+      // connecting). Best-effort: if the sensor is busy with something
+      // else, fall through and just report whatever's cached.
+      try {
+        await rpc.send("refresh_enroll_map");
+        for (let i = 0; i < ENROLL_MAP_WAIT_TRIES; i++) {
+          const st = await rpc.send("get_status");
+          if (!st.busy) break;
+          await sleep(ENROLL_MAP_WAIT_MS);
+        }
+      } catch (e) {
+        /* busy or transient - get_enrolled below just returns stale/none */
+      }
+
       for (const id of SLOT_IDS) {
+        let gotAny = slotInfo.has(id);
+        const info = slotInfo.get(id) || {};
         try {
           const data = await rpc.send("get_finger", { finger_id: id });
-          slotInfo.set(id, { hasValue: !!data.has_value, enter: !!data.enter });
+          info.hasValue = !!data.has_value;
+          info.enter = !!data.enter;
+          gotAny = true;
         } catch (e) {
           // Leave any previously known value alone -- a communication
           // failure is not evidence the stored value is gone.
         }
+        try {
+          const tdata = await rpc.send("get_enrolled", { finger_id: id });
+          info.templateValid = !!tdata.valid;
+          info.hasTemplate = !!tdata.has_template;
+          gotAny = true;
+        } catch (e) {
+          // Same as above, but for the template-enrolled status.
+        }
+        if (gotAny) slotInfo.set(id, info);
         renderSlotStatus(id);
       }
     });

@@ -16,7 +16,7 @@
  *
  * Supported cmd values: ping, get_status, get_fingers, get_finger,
  * update_finger, delete_finger, set_finger_enter, enroll_start,
- * enroll_status.
+ * enroll_status, refresh_enroll_map, get_enrolled.
  *
  * WRITE-ONLY BY DESIGN: get_finger never returns the stored output
  * string, only whether one exists (data.has_value) and the "send enter"
@@ -230,6 +230,35 @@ static void cmd_delete_finger(const char *line, int req_id, zw3021_rpc_tx_fn tx)
     rpc_send_ok(req_id, NULL, tx);
 }
 
+static void cmd_refresh_enroll_map(const char *line, int req_id, zw3021_rpc_tx_fn tx) {
+    ARG_UNUSED(line);
+    int ret = zw3021_request_read_enrolled();
+    if (ret != 0) {
+        rpc_send_error(req_id, "busy", tx);
+        return;
+    }
+    rpc_send_ok(req_id, NULL, tx);
+}
+
+static void cmd_get_enrolled(const char *line, int req_id, zw3021_rpc_tx_fn tx) {
+    int id = json_find_int(line, "finger_id", -1);
+    if (id <= 0) {
+        rpc_send_error(req_id, "missing or invalid finger_id", tx);
+        return;
+    }
+
+    bool has_template = false;
+    /* -EAGAIN (no refresh_enroll_map has completed yet since boot) still
+     * reports valid:false rather than an RPC error -- this is a normal,
+     * expected state right after connecting. */
+    bool valid = zw3021_get_enrolled((uint16_t)id, &has_template) == 0;
+
+    char data[ZW3021_RPC_RESPONSE_MAX - 32];
+    snprintf(data, sizeof(data), "{\"finger_id\":%d,\"valid\":%s,\"has_template\":%s}", id,
+             valid ? "true" : "false", (valid && has_template) ? "true" : "false");
+    rpc_send_ok(req_id, data, tx);
+}
+
 static void cmd_enroll_start(const char *line, int req_id, zw3021_rpc_tx_fn tx) {
     int id = json_find_int(line, "finger_id", -1);
     if (id <= 0) {
@@ -267,6 +296,8 @@ static const struct rpc_command rpc_commands[] = {
     {"set_finger_enter", cmd_set_finger_enter},
     {"enroll_start", cmd_enroll_start},
     {"enroll_status", cmd_enroll_status},
+    {"refresh_enroll_map", cmd_refresh_enroll_map},
+    {"get_enrolled", cmd_get_enrolled},
 };
 
 void zw3021_rpc_send_framing_error(const char *message, zw3021_rpc_tx_fn tx) {

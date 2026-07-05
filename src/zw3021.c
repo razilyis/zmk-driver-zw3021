@@ -49,7 +49,12 @@ BUILD_ASSERT(DT_NUM_INST_STATUS_OKAY(DT_DRV_COMPAT) <= 1, "zw3021: only one inst
 #define ZW3021_CMD_AUTO_ENROLL 0x31
 #define ZW3021_CMD_DELETE_CHAR 0x0C
 #define ZW3021_CMD_EMPTY 0x0D
+#define ZW3021_CMD_READ_INDEX_TABLE 0x1F
 #define ZW3021_BOOT_BYTE 0x55
+
+/* PS_ReadIndexTable: 1 bit per template ID, 1 = enrolled. Page 0 covers
+ * IDs 0-255, which is all this driver's RPC layer ever exposes. */
+#define ZW3021_INDEX_TABLE_LEN 32
 
 /* Not exposed via devicetree: fixed protocol timing, not board wiring.
  * Was 200ms; confirmed on real hardware that just having a second BLE
@@ -79,6 +84,7 @@ enum zw3021_request_type {
     ZW3021_REQ_ENROLL,
     ZW3021_REQ_DELETE,
     ZW3021_REQ_CLEAR,
+    ZW3021_REQ_READ_ENROLLED,
 };
 
 struct zw3021_request {
@@ -102,6 +108,14 @@ K_SEM_DEFINE(zw3021_finger_sem, 0, 1);
 static struct zw3021_request zw3021_pending_request;
 static bool zw3021_request_pending;
 K_SEM_DEFINE(zw3021_request_sem, 0, 1);
+
+/* Last bitmap fetched by ZW3021_REQ_READ_ENROLLED, and whether one has
+ * ever been fetched since boot. Only the zw3021 worker thread (producer)
+ * and zw3021_get_enrolled() (consumer, called from RPC command context)
+ * touch these; a torn read racing a refresh is a stale/next-poll-fixes-
+ * itself status glitch, not a correctness issue worth locking for. */
+static uint8_t zw3021_enrolled_bitmap[ZW3021_INDEX_TABLE_LEN];
+static bool zw3021_enrolled_bitmap_valid;
 
 static void zw3021_uart_send_packet(const struct device *uart_dev, uint8_t packet_id,
                                      const uint8_t *payload, uint16_t payload_len) {
@@ -440,6 +454,33 @@ static int zw3021_empty_database(const struct device *uart_dev) {
     return -EIO;
 }
 
+/* Returns 0 on success (out_index filled with 32 bytes covering IDs
+ * 0-255, 1 bit per ID, bit=1 meaning a template is enrolled there),
+ * -ETIMEDOUT, -EBADMSG, or -EIO. */
+static int zw3021_read_index_table(const struct device *uart_dev, uint8_t page,
+                                    uint8_t out_index[ZW3021_INDEX_TABLE_LEN]) {
+    uint8_t params[1] = {page};
+    uint8_t rx[1 + ZW3021_INDEX_TABLE_LEN + 2]; /* confirm + index + checksum */
+    uint16_t rx_len;
+
+    zw3021_send_command(uart_dev, ZW3021_CMD_READ_INDEX_TABLE, params, sizeof(params));
+
+    int ret = zw3021_recv_packet(uart_dev, rx, sizeof(rx), &rx_len, ZW3021_QUICK_CMD_TIMEOUT_MS);
+    if (ret != 0) {
+        return ret;
+    }
+    if (rx_len < 1 + ZW3021_INDEX_TABLE_LEN) {
+        return -EBADMSG;
+    }
+    if (rx[0] != 0x00) {
+        LOG_WRN("zw3021: read index table failed, confirm=0x%02x", rx[0]);
+        return -EIO;
+    }
+
+    memcpy(out_index, &rx[1], ZW3021_INDEX_TABLE_LEN);
+    return 0;
+}
+
 /* Shared power-on/boot-confirm/handshake preamble used by both the
  * INT-triggered identify flow and the on-demand enroll/delete/clear
  * requests. Returns 0 if the sensor is ready for commands.
@@ -490,6 +531,11 @@ static void zw3021_power_off_and_rearm(const struct zw3021_config *cfg) {
 #define ZW3021_OUTPUT_BASE_POSITION (ZMK_KEYMAP_LEN - ZW3021_OUTPUT_KEYBOARD_LEN)
 #define ZW3021_OUTPUT_ENTER_OFFSET 36
 #define ZW3021_KEYPRESS_GAP_MS 5
+/* Extra settle time before Enter, on top of the normal per-key gap:
+ * the receiving app (e.g. a login form) needs a moment after the last
+ * character's key-up to actually commit it to the field before Enter
+ * submits, or the submit races the last character and the login fails. */
+#define ZW3021_OUTPUT_ENTER_DELAY_MS 150
 
 static int zw3021_char_to_offset(char c) {
     if (c >= '0' && c <= '9') {
@@ -556,6 +602,7 @@ static void zw3021_emit_match_output(uint16_t match_id) {
     bool send_enter = false;
     zw3021_storage_get_enter(match_id, &send_enter);
     if (send_enter) {
+        k_sleep(K_MSEC(ZW3021_OUTPUT_ENTER_DELAY_MS));
         zw3021_emit_enter();
     }
 }
@@ -628,6 +675,18 @@ static void zw3021_handle_request_event(const struct device *dev, const struct z
             }
             break;
         }
+        case ZW3021_REQ_READ_ENROLLED: {
+            uint8_t bitmap[ZW3021_INDEX_TABLE_LEN];
+            int ret = zw3021_read_index_table(cfg->uart_dev, 0, bitmap);
+            if (ret == 0) {
+                memcpy(zw3021_enrolled_bitmap, bitmap, sizeof(bitmap));
+                zw3021_enrolled_bitmap_valid = true;
+                LOG_INF("zw3021: read enrolled-id bitmap ok");
+            } else {
+                LOG_WRN("zw3021: read enrolled-id bitmap failed: %d", ret);
+            }
+            break;
+        }
         }
     }
 
@@ -653,7 +712,20 @@ int zw3021_request_delete(uint16_t id) { return zw3021_queue_request(ZW3021_REQ_
 
 int zw3021_request_clear(void) { return zw3021_queue_request(ZW3021_REQ_CLEAR, 0); }
 
+int zw3021_request_read_enrolled(void) { return zw3021_queue_request(ZW3021_REQ_READ_ENROLLED, 0); }
+
 bool zw3021_is_busy(void) { return zw3021_request_pending; }
+
+int zw3021_get_enrolled(uint16_t id, bool *has_template) {
+    if (!zw3021_enrolled_bitmap_valid) {
+        return -EAGAIN;
+    }
+    if (id >= ZW3021_INDEX_TABLE_LEN * 8) {
+        return -EINVAL;
+    }
+    *has_template = (zw3021_enrolled_bitmap[id / 8] >> (id % 8)) & 1;
+    return 0;
+}
 
 static void zw3021_thread_fn(void *p1, void *p2, void *p3) {
     ARG_UNUSED(p1);

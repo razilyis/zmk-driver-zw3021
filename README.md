@@ -271,6 +271,8 @@ Response: {"ok":true,"req_id":<int>,"data":{...}}
 | `set_finger_enter` | `finger_id`, `enter` | toggles the per-ID "send enter" flag independently of the string |
 | `enroll_start` | `finger_id` | wraps `zw3021_request_enroll()` |
 | `enroll_status` | — | `data.busy` |
+| `refresh_enroll_map` | — | queues a `PS_ReadIndexTable` sensor query (IDs 0-255); poll `get_status` until not busy, then call `get_enrolled` |
+| `get_enrolled` | `finger_id` | `data.valid` (a bitmap has been read since boot), `data.has_template` -- from the last `refresh_enroll_map` result, not a live sensor query |
 
 **`get_finger` is deliberately write-only for the actual string.** This
 console has no authentication -- anyone with physical USB access can send
@@ -496,8 +498,14 @@ No raw fingerprint image, template, or stored-string data is ever logged.
   cover this; USB has no such warm-up period.
 - `enroll_status` only reports whether the driver is busy, not
   success/failure detail for the enrollment attempt in progress -- the
-  Web UI can only tell you when it's done, not whether it succeeded; check
-  the device log or re-check `get_fingers`/`get_finger` afterwards.
+  Web UI can only tell you when it's done, not whether it succeeded.
+  `refresh_enroll_map`/`get_enrolled` (`PS_ReadIndexTable`) let it confirm
+  afterwards whether a template actually landed at that ID, without
+  needing the device log.
+- `get_enrolled`'s bitmap-to-ID bit order (LSB-first per byte, i.e. bit 0
+  of byte 0 = ID 0) is inferred from common practice for this sensor
+  family, not stated explicitly in the protocol manual -- confirm it
+  matches reality against a known enrolled ID before trusting it broadly.
 
 ## Roadmap
 
