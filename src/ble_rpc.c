@@ -286,8 +286,22 @@ static void on_disconnected(struct bt_conn *conn, uint8_t reason) {
     schedule_advertising_start(BLE_RPC_ADV_RETRY_INITIAL_DELAY_MS);
 }
 
+/* Diagnostic only: bt_conn_le_param_update() above is just a request --
+ * the central can ignore or partially honor it. Log what was actually
+ * negotiated so real hardware testing can confirm whether the longer
+ * interval requested in on_ext_adv_connected() actually took effect. */
+static void on_le_param_updated(struct bt_conn *conn, uint16_t interval, uint16_t latency,
+                                 uint16_t timeout) {
+    if (conn != ble_rpc_conn) {
+        return;
+    }
+    LOG_INF("zw3021: BLE RPC conn params updated: interval=%u (%u ms) latency=%u timeout=%u (%u ms)",
+            interval, interval * 5 / 4, latency, timeout, timeout * 10);
+}
+
 BT_CONN_CB_DEFINE(zw3021_ble_rpc_conn_cb) = {
     .disconnected = on_disconnected,
+    .le_param_updated = on_le_param_updated,
 };
 
 /* No device-name field here: FLAGS (3 bytes) + a 128-bit service UUID
