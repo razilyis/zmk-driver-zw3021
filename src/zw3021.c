@@ -51,8 +51,14 @@ BUILD_ASSERT(DT_NUM_INST_STATUS_OKAY(DT_DRV_COMPAT) <= 1, "zw3021: only one inst
 #define ZW3021_CMD_EMPTY 0x0D
 #define ZW3021_BOOT_BYTE 0x55
 
-/* Not exposed via devicetree: fixed protocol timing, not board wiring. */
-#define ZW3021_QUICK_CMD_TIMEOUT_MS 200
+/* Not exposed via devicetree: fixed protocol timing, not board wiring.
+ * Was 200ms; confirmed on real hardware that just having a second BLE
+ * connection active (CONFIG_ZW3021_BLE_RPC) -- even fully idle, no
+ * notifications in flight -- introduces enough scheduling jitter on this
+ * thread to occasionally blow a 200ms budget and time out the handshake
+ * response. 1000ms leaves comfortable headroom while still being "quick"
+ * relative to the enroll/identify timeouts below. */
+#define ZW3021_QUICK_CMD_TIMEOUT_MS 1000
 #define ZW3021_REARM_POLL_MS 20
 
 #define ZW3021_RX_BUF_LEN 16
