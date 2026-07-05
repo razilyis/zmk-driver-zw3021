@@ -515,21 +515,23 @@ static void zw3021_power_off_and_rearm(const struct zw3021_config *cfg) {
 }
 
 #if IS_ENABLED(CONFIG_ZW3021_STORAGE)
-/* Virtual output keyboard: 36 positions reserved at the end of the keymap
+/* Virtual output keyboard: 38 positions reserved at the end of the keymap
  * (row 4 in the moNa2 matrix transform, unreachable by real kscan hardware
  * -- see boards/shields/mona2/mona2.dtsi in zmk-config-moNa2-v2), bound on
- * default_layer to '0'-'9' then 'a'-'z' in that order. Typing a stored
- * string is done by walking it and raising a press+release
- * position-changed event per character, which ZMK's own
+ * default_layer to '0'-'9', 'a'-'z', LSHIFT, then Enter in that order.
+ * Typing a stored string is done by walking it and raising press/release
+ * position-changed events per character (holding the LSHIFT position for
+ * the duration of an uppercase letter's press), which ZMK's own
  * split_peripheral_listener automatically forwards to the BLE central
  * (zmk/app/src/split/peripheral.c) -- no protocol changes needed.
  *
- * Case/symbols are not supported in this phase: only lowercase letters and
- * digits round-trip correctly (see zw3021_char_to_offset()).
+ * Symbols are not supported in this phase: only alphanumerics round-trip
+ * (see zw3021_char_to_offset()), but case now does (via LSHIFT).
  */
-#define ZW3021_OUTPUT_KEYBOARD_LEN 37 /* 36 alnum + 1 Enter, see ZW3021_OUTPUT_ENTER_OFFSET */
+#define ZW3021_OUTPUT_KEYBOARD_LEN 38 /* 36 alnum + 1 LSHIFT + 1 Enter */
 #define ZW3021_OUTPUT_BASE_POSITION (ZMK_KEYMAP_LEN - ZW3021_OUTPUT_KEYBOARD_LEN)
-#define ZW3021_OUTPUT_ENTER_OFFSET 36
+#define ZW3021_OUTPUT_SHIFT_OFFSET 36
+#define ZW3021_OUTPUT_ENTER_OFFSET 37
 #define ZW3021_KEYPRESS_GAP_MS 5
 /* Extra settle time before Enter, on top of the normal per-key gap:
  * the receiving app (e.g. a login form) needs a moment after the last
@@ -545,9 +547,19 @@ static int zw3021_char_to_offset(char c) {
         return 10 + (c - 'a');
     }
     if (c >= 'A' && c <= 'Z') {
-        return 10 + (c - 'A'); /* folded to the same lowercase-key position */
+        return 10 + (c - 'A'); /* same key position as lowercase; LSHIFT distinguishes case */
     }
     return -1;
+}
+
+static void zw3021_set_position(uint32_t position, bool pressed) {
+    raise_zmk_position_state_changed((struct zmk_position_state_changed){
+        .source = ZMK_POSITION_STATE_CHANGE_SOURCE_LOCAL,
+        .state = pressed,
+        .position = position,
+        .timestamp = k_uptime_get(),
+    });
+    k_sleep(K_MSEC(ZW3021_KEYPRESS_GAP_MS));
 }
 
 static void zw3021_emit_position(uint32_t position) {
@@ -575,7 +587,16 @@ static void zw3021_emit_char(char c) {
         return;
     }
 
+    bool shifted = c >= 'A' && c <= 'Z';
+    uint32_t shift_position = ZW3021_OUTPUT_BASE_POSITION + ZW3021_OUTPUT_SHIFT_OFFSET;
+
+    if (shifted) {
+        zw3021_set_position(shift_position, true);
+    }
     zw3021_emit_position(ZW3021_OUTPUT_BASE_POSITION + offset);
+    if (shifted) {
+        zw3021_set_position(shift_position, false);
+    }
 }
 
 static void zw3021_emit_enter(void) {

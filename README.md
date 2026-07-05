@@ -483,8 +483,12 @@ No raw fingerprint image, template, or stored-string data is ever logged.
   real hardware for the success path (enroll → identify → match); the
   various failure confirm codes (duplicate ID, full database, etc.) are
   implemented per the protocol manual but not individually exercised.
-- Output strings are lowercase-alphanumeric only (no uppercase, symbols,
-  or spaces); see `zw3021_char_to_offset()` in `src/zw3021.c`.
+- Output strings support alphanumerics with case (via a virtual LSHIFT
+  key held for uppercase letters) but not symbols or spaces; see
+  `zw3021_char_to_offset()`/`zw3021_emit_char()` in `src/zw3021.c`. This
+  needs a matching 38-slot virtual keyboard in zmk-config-moNa2-v2 (was
+  37 slots before LSHIFT was added) -- see its `mona2.dtsi` and both
+  `mona2.keymap` files.
 - `get_fingers` finds stored IDs by scanning 1..100 and checking each with
   `nvs_read` -- fine at this scale, but not how you'd enumerate a much
   larger ID space.
