@@ -462,6 +462,14 @@
       this.pending = new Map();
       this.onLog = () => {};
       this.onDisconnect = () => {};
+      // Serializes writes: multiple send() calls can be in flight at once
+      // (e.g. the initial get_status/get_finger/ping burst right after
+      // connecting), and unlike Web Serial's WritableStream, independent
+      // characteristic.writeValueWithResponse() calls have no built-in
+      // ordering guarantee against each other -- without this queue their
+      // chunks can interleave on the wire and corrupt the firmware's
+      // brace-balance JSON framing (confirmed on real hardware).
+      this._writeQueue = Promise.resolve();
       this._onValueChanged = (event) => {
         const decoder = new TextDecoder();
         this.rxBuffer += decoder.decode(event.target.value);
@@ -540,11 +548,19 @@
       else entry.reject(new Error(msg.message || "不明なエラー"));
     }
 
-    async _writeChunked(bytes) {
-      for (let offset = 0; offset < bytes.length; offset += BLE_WRITE_CHUNK_SIZE) {
-        const chunk = bytes.slice(offset, offset + BLE_WRITE_CHUNK_SIZE);
-        await this.requestChar.writeValueWithResponse(chunk);
-      }
+    _writeChunked(bytes) {
+      const doWrite = async () => {
+        for (let offset = 0; offset < bytes.length; offset += BLE_WRITE_CHUNK_SIZE) {
+          const chunk = bytes.slice(offset, offset + BLE_WRITE_CHUNK_SIZE);
+          await this.requestChar.writeValueWithResponse(chunk);
+        }
+      };
+      // Run after whatever's already queued, regardless of whether that
+      // earlier write succeeded or failed, so one failure doesn't wedge
+      // every write after it.
+      const result = this._writeQueue.then(doWrite, doWrite);
+      this._writeQueue = result.catch(() => {});
+      return result;
     }
 
     send(cmd, extra) {
