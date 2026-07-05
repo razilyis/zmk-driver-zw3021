@@ -469,17 +469,27 @@
       };
     }
 
+    async _step(label, fn) {
+      try {
+        return await fn();
+      } catch (e) {
+        this.onLog("err", `[${label}] ${e.name || "Error"}: ${e.message}`);
+        throw new Error(`${label}: ${e.message}`);
+      }
+    }
+
     async connect() {
-      const device = await navigator.bluetooth.requestDevice({
-        filters: [{ services: [BLE_SERVICE_UUID] }],
-      });
+      const device = await this._step("デバイス選択", () =>
+        navigator.bluetooth.requestDevice({ filters: [{ services: [BLE_SERVICE_UUID] }] }));
       device.addEventListener("gattserverdisconnected", () => this.onDisconnect());
 
-      const server = await device.gatt.connect();
-      const service = await server.getPrimaryService(BLE_SERVICE_UUID);
-      this.requestChar = await service.getCharacteristic(BLE_REQUEST_CHRC_UUID);
-      this.responseChar = await service.getCharacteristic(BLE_RESPONSE_CHRC_UUID);
-      await this.responseChar.startNotifications();
+      const server = await this._step("GATT接続", () => device.gatt.connect());
+      const service = await this._step("サービス取得", () => server.getPrimaryService(BLE_SERVICE_UUID));
+      this.requestChar = await this._step("リクエスト特性取得",
+        () => service.getCharacteristic(BLE_REQUEST_CHRC_UUID));
+      this.responseChar = await this._step("レスポンス特性取得",
+        () => service.getCharacteristic(BLE_RESPONSE_CHRC_UUID));
+      await this._step("通知購読", () => this.responseChar.startNotifications());
       this.responseChar.addEventListener("characteristicvaluechanged", this._onValueChanged);
       this.device = device;
     }
