@@ -34,6 +34,7 @@
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/settings/settings.h>
 #include <zephyr/sys/ring_buffer.h>
 
 LOG_MODULE_REGISTER(zw3021_ble_rpc, CONFIG_ZMK_LOG_LEVEL);
@@ -270,8 +271,45 @@ static int start_advertising(void) {
     return 0;
 }
 
-static int zw3021_ble_rpc_init(void) {
+/* bt_le_ext_adv_create() fails with -EAGAIN if called before the BT
+ * identity address is ready, which only happens once settings_load() has
+ * run (main.c calls it after all SYS_INIT hooks, including this one, have
+ * already executed) -- confirmed on real hardware: "No ID address. App
+ * must call settings_load()" logged immediately before this failure.
+ * ZMK's own zmk_peripheral_ble_init() (src/split/bluetooth/peripheral.c)
+ * hits the same ordering problem and solves it the same way: register a
+ * settings handler whose h_commit callback -- called once, after
+ * settings_load() finishes loading everything -- does the actual
+ * BT setup instead of doing it directly at SYS_INIT time.
+ */
+#if IS_ENABLED(CONFIG_SETTINGS)
+
+static int ble_rpc_settings_set(const char *name, size_t len, settings_read_cb read_cb,
+                                 void *cb_arg) {
+    ARG_UNUSED(name);
+    ARG_UNUSED(len);
+    ARG_UNUSED(read_cb);
+    ARG_UNUSED(cb_arg);
+    return 0;
+}
+
+static int ble_rpc_settings_commit(void) {
     return start_advertising();
+}
+
+static struct settings_handler zw3021_ble_rpc_settings_handler = {
+    .name = "zw3021_ble_rpc",
+    .h_set = ble_rpc_settings_set,
+    .h_commit = ble_rpc_settings_commit,
+};
+#endif
+
+static int zw3021_ble_rpc_init(void) {
+#if IS_ENABLED(CONFIG_SETTINGS)
+    return settings_register(&zw3021_ble_rpc_settings_handler);
+#else
+    return start_advertising();
+#endif
 }
 
 SYS_INIT(zw3021_ble_rpc_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
