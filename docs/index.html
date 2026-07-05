@@ -548,11 +548,31 @@
       else entry.reject(new Error(msg.message || "不明なエラー"));
     }
 
+    async _writeOnce(chunk) {
+      // Even serialized (queued) writes have been observed to throw
+      // "GATT operation already in progress" on real hardware -- the
+      // previous write's promise can resolve slightly before the OS/BLE
+      // stack considers itself free for the next one. Retry a few times
+      // with a short backoff rather than failing the whole command.
+      const maxAttempts = 4;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          await this.requestChar.writeValueWithResponse(chunk);
+          return;
+        } catch (e) {
+          if (attempt === maxAttempts || !/already in progress/i.test(e.message || "")) {
+            throw e;
+          }
+          await new Promise((r) => setTimeout(r, 30 * attempt));
+        }
+      }
+    }
+
     _writeChunked(bytes) {
       const doWrite = async () => {
         for (let offset = 0; offset < bytes.length; offset += BLE_WRITE_CHUNK_SIZE) {
           const chunk = bytes.slice(offset, offset + BLE_WRITE_CHUNK_SIZE);
-          await this.requestChar.writeValueWithResponse(chunk);
+          await this._writeOnce(chunk);
         }
       };
       // Run after whatever's already queued, regardless of whether that
