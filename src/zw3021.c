@@ -480,8 +480,9 @@ static void zw3021_power_off_and_rearm(const struct zw3021_config *cfg) {
  * Case/symbols are not supported in this phase: only lowercase letters and
  * digits round-trip correctly (see zw3021_char_to_offset()).
  */
-#define ZW3021_OUTPUT_KEYBOARD_LEN 36
+#define ZW3021_OUTPUT_KEYBOARD_LEN 37 /* 36 alnum + 1 Enter, see ZW3021_OUTPUT_ENTER_OFFSET */
 #define ZW3021_OUTPUT_BASE_POSITION (ZMK_KEYMAP_LEN - ZW3021_OUTPUT_KEYBOARD_LEN)
+#define ZW3021_OUTPUT_ENTER_OFFSET 36
 #define ZW3021_KEYPRESS_GAP_MS 5
 
 static int zw3021_char_to_offset(char c) {
@@ -497,15 +498,7 @@ static int zw3021_char_to_offset(char c) {
     return -1;
 }
 
-static void zw3021_emit_char(char c) {
-    int offset = zw3021_char_to_offset(c);
-    if (offset < 0) {
-        LOG_WRN("zw3021: output: unsupported character 0x%02x, skipping", (uint8_t)c);
-        return;
-    }
-
-    uint32_t position = ZW3021_OUTPUT_BASE_POSITION + offset;
-
+static void zw3021_emit_position(uint32_t position) {
     raise_zmk_position_state_changed((struct zmk_position_state_changed){
         .source = ZMK_POSITION_STATE_CHANGE_SOURCE_LOCAL,
         .state = true,
@@ -521,6 +514,20 @@ static void zw3021_emit_char(char c) {
         .timestamp = k_uptime_get(),
     });
     k_sleep(K_MSEC(ZW3021_KEYPRESS_GAP_MS));
+}
+
+static void zw3021_emit_char(char c) {
+    int offset = zw3021_char_to_offset(c);
+    if (offset < 0) {
+        LOG_WRN("zw3021: output: unsupported character 0x%02x, skipping", (uint8_t)c);
+        return;
+    }
+
+    zw3021_emit_position(ZW3021_OUTPUT_BASE_POSITION + offset);
+}
+
+static void zw3021_emit_enter(void) {
+    zw3021_emit_position(ZW3021_OUTPUT_BASE_POSITION + ZW3021_OUTPUT_ENTER_OFFSET);
 }
 
 static void zw3021_emit_string(const char *str) {
@@ -539,6 +546,12 @@ static void zw3021_emit_match_output(uint16_t match_id) {
     }
 
     zw3021_emit_string(value);
+
+    bool send_enter = false;
+    zw3021_storage_get_enter(match_id, &send_enter);
+    if (send_enter) {
+        zw3021_emit_enter();
+    }
 }
 #endif /* IS_ENABLED(CONFIG_ZW3021_STORAGE) */
 

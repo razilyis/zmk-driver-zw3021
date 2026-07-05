@@ -10,12 +10,21 @@
  * by simple substring search, same technique as that reference
  * implementation.
  *
- * Request:  {"cmd":"<name>","req_id":<int>,"finger_id":<int>,"value":"<str>"}
+ * Request:  {"cmd":"<name>","req_id":<int>,"finger_id":<int>,"value":"<str>","enter":<bool>}
  * Response: {"ok":true,"req_id":<int>,"data":{...}}
  *        or {"ok":false,"req_id":<int>,"message":"..."}
  *
  * Supported cmd values: ping, get_status, get_fingers, get_finger,
- * update_finger, delete_finger, enroll_start, enroll_status.
+ * update_finger, delete_finger, set_finger_enter, enroll_start,
+ * enroll_status.
+ *
+ * WRITE-ONLY BY DESIGN: get_finger never returns the stored output
+ * string, only whether one exists (data.has_value) and the "send enter"
+ * flag (data.enter). This console has no authentication -- anyone with
+ * physical USB access can send RPC commands -- so echoing the raw value
+ * back would let them read out every stored secret without ever
+ * triggering a fingerprint match, defeating the point of gating it
+ * behind one. update_finger/set_finger_enter can still write blind.
  */
 
 #include "zw3021.h"
@@ -110,21 +119,25 @@ static int json_find_int(const char *json, const char *key, int def) {
     return def;
 }
 
-static void json_escape(const char *in, char *out, size_t out_size) {
-    size_t j = 0;
-    for (size_t i = 0; in[i] != '\0' && j < out_size - 1; i++) {
-        unsigned char c = (unsigned char)in[i];
-        if (c == '\\' || c == '"') {
-            if (j + 2 >= out_size) {
-                break;
-            }
-            out[j++] = '\\';
-            out[j++] = c;
-        } else if (c >= 0x20) {
-            out[j++] = c;
-        }
+static bool json_find_bool(const char *json, const char *key, bool def) {
+    char search[32];
+    snprintf(search, sizeof(search), "\"%s\":", key);
+
+    const char *p = strstr(json, search);
+    if (!p) {
+        return def;
     }
-    out[j] = '\0';
+    p += strlen(search);
+    while (*p == ' ') {
+        p++;
+    }
+    if (strncmp(p, "true", 4) == 0) {
+        return true;
+    }
+    if (strncmp(p, "false", 5) == 0) {
+        return false;
+    }
+    return def;
 }
 
 /* ===== Response senders ===== */
@@ -183,18 +196,36 @@ static void cmd_get_finger(const char *line, int req_id) {
         return;
     }
 
+    /* Deliberately does not return the stored value itself: this RPC
+     * console has no authentication, so returning the raw string would
+     * let anyone with physical USB access read it out without ever
+     * touching the fingerprint sensor, defeating the point of gating it
+     * behind a match. Existence and the enter flag are not secrets. */
     char value[ZW3021_STORAGE_MAX_LEN + 1];
-    if (zw3021_storage_get((uint16_t)id, value, sizeof(value)) != 0) {
-        rpc_send_error(req_id, "not found");
-        return;
-    }
-
-    char escaped[ZW3021_STORAGE_MAX_LEN * 2 + 1];
-    json_escape(value, escaped, sizeof(escaped));
+    bool has_value = zw3021_storage_get((uint16_t)id, value, sizeof(value)) == 0;
+    bool send_enter = false;
+    zw3021_storage_get_enter((uint16_t)id, &send_enter);
 
     char data[ZW3021_RPC_RESPONSE_MAX - 32];
-    snprintf(data, sizeof(data), "{\"finger_id\":%d,\"value\":\"%s\"}", id, escaped);
+    snprintf(data, sizeof(data), "{\"finger_id\":%d,\"has_value\":%s,\"enter\":%s}", id,
+             has_value ? "true" : "false", send_enter ? "true" : "false");
     rpc_send_ok(req_id, data);
+}
+
+static void cmd_set_finger_enter(const char *line, int req_id) {
+    int id = json_find_int(line, "finger_id", -1);
+    if (id <= 0) {
+        rpc_send_error(req_id, "missing or invalid finger_id");
+        return;
+    }
+    bool enable = json_find_bool(line, "enter", false);
+
+    int ret = zw3021_storage_set_enter((uint16_t)id, enable);
+    if (ret != 0) {
+        rpc_send_error(req_id, "storage write failed");
+        return;
+    }
+    rpc_send_ok(req_id, NULL);
 }
 
 static void cmd_update_finger(const char *line, int req_id) {
@@ -225,6 +256,7 @@ static void cmd_delete_finger(const char *line, int req_id) {
         return;
     }
 
+    /* Also clears id's "send enter" flag (zw3021_storage_delete). */
     zw3021_storage_delete((uint16_t)id);
     rpc_send_ok(req_id, NULL);
 }
@@ -263,6 +295,7 @@ static const struct rpc_command rpc_commands[] = {
     {"get_finger", cmd_get_finger},
     {"update_finger", cmd_update_finger},
     {"delete_finger", cmd_delete_finger},
+    {"set_finger_enter", cmd_set_finger_enter},
     {"enroll_start", cmd_enroll_start},
     {"enroll_status", cmd_enroll_status},
 };

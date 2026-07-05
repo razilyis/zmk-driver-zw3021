@@ -10,6 +10,12 @@
 
 LOG_MODULE_REGISTER(zw3021_storage, CONFIG_ZMK_LOG_LEVEL);
 
+/* The "send enter" flag lives in the same NVS instance as the output
+ * strings, but in a disjoint key range so it can never collide with a
+ * real finger id (which stays well under this in practice).
+ */
+#define ZW3021_STORAGE_ENTER_KEY_OFFSET 0x4000
+
 /* Separate NVS instance on zw3021_partition (independent of ZMK's own
  * settings/BLE-bonding NVS on storage_partition). See
  * boards/shields/mona2/mona2_l.overlay in zmk-config-moNa2-v2 for the
@@ -82,5 +88,30 @@ int zw3021_storage_delete(uint16_t id) {
         return -ENODEV;
     }
 
+    nvs_delete(&zw3021_nvs, id + ZW3021_STORAGE_ENTER_KEY_OFFSET);
     return nvs_delete(&zw3021_nvs, id);
+}
+
+int zw3021_storage_get_enter(uint16_t id, bool *out) {
+    *out = false;
+    if (!zw3021_storage_ready) {
+        return -ENODEV;
+    }
+
+    uint8_t value = 0;
+    ssize_t ret = nvs_read(&zw3021_nvs, id + ZW3021_STORAGE_ENTER_KEY_OFFSET, &value, sizeof(value));
+    if (ret > 0) {
+        *out = value != 0;
+    }
+    return 0;
+}
+
+int zw3021_storage_set_enter(uint16_t id, bool enabled) {
+    if (!zw3021_storage_ready) {
+        return -ENODEV;
+    }
+
+    uint8_t value = enabled ? 1 : 0;
+    ssize_t ret = nvs_write(&zw3021_nvs, id + ZW3021_STORAGE_ENTER_KEY_OFFSET, &value, sizeof(value));
+    return ret < 0 ? (int)ret : 0;
 }

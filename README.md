@@ -212,19 +212,27 @@ automatically forwarded to the central by ZMK's own
 path real key matrix presses already use
 (`zmk/app/src/physical_layouts.c`).
 
-This requires 36 **virtual key positions** reserved beyond the keyboard's
-real key count (one per `0-9`/`a-z` character), bound on `default_layer` to
-the matching `&kp` keycode and to `&trans` on every other layer -- see
-`boards/shields/mona2/mona2.dtsi`'s `RC(4,N)` transform entries (row 4 is
-never producible by real kscan hardware, which only has 4 physical rows)
-and `mona2.keymap`'s per-layer bindings in `zmk-config-moNa2-v2`. Case and
-symbols aren't supported yet: uppercase letters fold to the same position
-as lowercase (see `zw3021_char_to_offset()` in `src/zw3021.c`).
+This requires 37 **virtual key positions** reserved beyond the keyboard's
+real key count (one per `0-9`/`a-z` character, plus one for `ENTER`),
+bound on `default_layer` to the matching `&kp` keycode and to `&trans` on
+every other layer -- see `boards/shields/mona2/mona2.dtsi`'s `RC(4,N)`
+transform entries (row 4 is never producible by real kscan hardware,
+which only has 4 physical rows) and `mona2.keymap`'s per-layer bindings in
+`zmk-config-moNa2-v2`. Case and symbols aren't supported yet: uppercase
+letters fold to the same position as lowercase (see
+`zw3021_char_to_offset()` in `src/zw3021.c`). The 37th (`ENTER`) position
+is only pressed after the string if that fingerprint ID has the "send
+enter" flag enabled (`zw3021_storage_get_enter()`, set per-ID over the
+serial RPC's `set_finger_enter` command below) -- useful for something
+like a password manager's master password field where you also want the
+form submitted.
 
 The string itself is stored in NVS on a dedicated flash partition
 (`zw3021_partition`, see the devicetree section above), keyed by
 fingerprint ID, via `src/storage.c` -- the same pattern as
-`zmk-module-Fingerprint/src/storage.c`.
+`zmk-module-Fingerprint/src/storage.c`. The "send enter" flag is stored in
+the same NVS instance under a disjoint key range so it can never collide
+with a fingerprint ID.
 
 ### 2. Serial RPC (`CONFIG_ZW3021_SERIAL_RPC`)
 
@@ -236,7 +244,7 @@ smaller command set and a flatter (unnested) JSON shape so a browser Web
 Serial UI can be connected later without a backend rewrite:
 
 ```text
-Request:  {"cmd":"<name>","req_id":<int>,"finger_id":<int>,"value":"<str>"}
+Request:  {"cmd":"<name>","req_id":<int>,"finger_id":<int>,"value":"<str>","enter":<bool>}
 Response: {"ok":true,"req_id":<int>,"data":{...}}
        or: {"ok":false,"req_id":<int>,"message":"..."}
 ```
@@ -246,11 +254,21 @@ Response: {"ok":true,"req_id":<int>,"data":{...}}
 | `ping` | — | |
 | `get_status` | — | `data.busy` |
 | `get_fingers` | — | `data.ids`: array of IDs with a stored string |
-| `get_finger` | `finger_id` | `data.value` |
-| `update_finger` | `finger_id`, `value` | writes/overwrites the string |
-| `delete_finger` | `finger_id` | |
+| `get_finger` | `finger_id` | `data.has_value`, `data.enter` -- **never returns the string itself** |
+| `update_finger` | `finger_id`, `value` | writes/overwrites the string (write-only) |
+| `delete_finger` | `finger_id` | also clears the "send enter" flag |
+| `set_finger_enter` | `finger_id`, `enter` | toggles the per-ID "send enter" flag independently of the string |
 | `enroll_start` | `finger_id` | wraps `zw3021_request_enroll()` |
 | `enroll_status` | — | `data.busy` |
+
+**`get_finger` is deliberately write-only for the actual string.** This
+console has no authentication -- anyone with physical USB access can send
+RPC commands -- so echoing the stored value back would let them read out
+every fingerprint's output string without ever touching the sensor,
+defeating the entire point of gating it behind a match. `get_finger` only
+reports whether a value exists and the enter flag; `update_finger` can
+still overwrite it blind, and `docs/index.html` is built around this (its
+"edit" flow always starts from an empty field).
 
 Since logs and RPC responses share one stream, expect them interleaved.
 Test by typing a line directly into the same serial terminal used for
@@ -259,6 +277,10 @@ logs, e.g.:
 ```text
 {"cmd":"update_finger","req_id":1,"finger_id":1,"value":"hunter2"}
 {"ok":true,"req_id":1,"data":{}}
+{"cmd":"set_finger_enter","req_id":2,"finger_id":1,"enter":true}
+{"ok":true,"req_id":2,"data":{}}
+{"cmd":"get_finger","req_id":3,"finger_id":1}
+{"ok":true,"req_id":3,"data":{"finger_id":1,"has_value":true,"enter":true}}
 ```
 
 ## Web Serial UI (`docs/index.html`)
@@ -266,9 +288,11 @@ logs, e.g.:
 A self-contained, build-free HTML/JS page ([docs/index.html](docs/index.html))
 implements a browser client for the RPC protocol above, using the
 [Web Serial API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Serial_API):
-connect to the sensor side's USB serial port, list/add/edit/delete
-per-finger output strings, and trigger enrollment -- all from a Chrome or
-Edge tab, no software install required.
+connect to the sensor side's USB serial port, see which of 5 fixed finger
+slots have an output string configured (never the string itself, per the
+write-only design above), overwrite/delete them, toggle the per-finger
+"send enter" flag, and trigger enrollment with an animated modal -- all
+from a Chrome or Edge tab, no software install required.
 
 Requirements:
 - Chrome or Edge 89+ (Web Serial isn't implemented in Firefox/Safari).
