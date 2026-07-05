@@ -243,16 +243,26 @@ static void schedule_advertising_start(uint32_t delay_ms) {
  * Confirmed on real hardware: this alone (no notifications/polling
  * needed) was enough to make the ZW3021's PS_HandShake response never
  * arrive, even with its own receive timeout raised to a full second.
- * This is just a background config console with no latency
- * requirements, so trade connection responsiveness for a much longer
- * interval + peripheral latency, freeing up the CPU for the sensor's
- * UART timing. Supervision timeout must exceed
- * (1 + latency) * interval_max * 2 (spec-mandated slack included below).
+ * Lengthening just the interval (below) fixed that.
+ *
+ * Peripheral latency was initially set to 4 (letting the peripheral
+ * skip up to 4 connection events) on top of the longer interval, but
+ * that was a mistake for this protocol: it lets the peripheral sleep
+ * through several intervals at a time, so our own request/response
+ * round trip can end up waiting up to (1 + latency) * interval before
+ * either side notices the other has something to send -- confirmed on
+ * real hardware: enroll_start reached the firmware and started
+ * enrollment successfully, but its RPC acknowledgement arrived too late
+ * for the browser's 10s command timeout. Latency 0 keeps every
+ * connection event serviced immediately, so this doesn't happen; the
+ * longer interval alone is what protects the sensor's UART timing.
+ * Supervision timeout must exceed (1 + latency) * interval_max * 2
+ * (spec-mandated slack included below).
  */
 #define BLE_RPC_CONN_INTERVAL_MIN 400 /* 500ms (units of 1.25ms) */
 #define BLE_RPC_CONN_INTERVAL_MAX 800 /* 1000ms */
-#define BLE_RPC_CONN_LATENCY 4
-#define BLE_RPC_CONN_TIMEOUT 1500 /* 15000ms (units of 10ms) */
+#define BLE_RPC_CONN_LATENCY 0
+#define BLE_RPC_CONN_TIMEOUT 400 /* 4000ms (units of 10ms) */
 
 static void on_ext_adv_connected(struct bt_le_ext_adv *adv, struct bt_le_ext_adv_connected_info *info) {
     ARG_UNUSED(adv);
