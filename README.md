@@ -317,6 +317,7 @@ CONFIG_BT_MAX_CONN=2               # existing split link + this connection
 CONFIG_BT_EXT_ADV_MAX_ADV_SET=2    # existing split advertising + this one
 CONFIG_BT_MAX_PAIRED=2             # existing bond with the central + this one
 CONFIG_BT_USER_DATA_LEN_UPDATE=y   # larger notification payloads
+CONFIG_BT_CONN_TX_MAX=64           # see below
 ```
 
 `CONFIG_BT_MAX_PAIRED` is easy to miss: the peripheral half has no
@@ -326,6 +327,18 @@ the central), so it silently falls back to Zephyr's stock default of
 it, pairing with a browser appears to succeed, but the encrypted CCC
 write required to enable notifications fails with a generic "GATT
 operation failed for unknown reason" (confirmed on real hardware).
+
+`CONFIG_BT_CONN_TX_MAX` is also easy to miss: the default TX buffer pool
+is sized for occasional traffic, not a notify-heavy RPC console.
+Confirmed on real hardware: polling `get_status` every couple of seconds
+exhausted it (`bt_att: Ran out of TX buffers or contexts`), and handling
+that appears to have starved the ZW3021's own UART handshake of timing,
+breaking enrollment while a browser stayed connected. ZMK Studio's own
+BLE RPC transport hits the identical problem and bumps this exact
+Kconfig option to the same value for the same reason. `docs/index.html`
+also pauses its background `get_status` poll for the duration of an
+enrollment attempt, to keep BLE traffic minimal exactly when the
+sensor's UART timing matters most.
 
 Both GATT characteristics require an encrypted (paired/bonded)
 connection (`BT_GATT_PERM_*_ENCRYPT`) -- consistent with the RPC's
@@ -383,6 +396,7 @@ CONFIG_BT_MAX_CONN=2
 CONFIG_BT_EXT_ADV_MAX_ADV_SET=2
 CONFIG_BT_MAX_PAIRED=2
 CONFIG_BT_USER_DATA_LEN_UPDATE=y
+CONFIG_BT_CONN_TX_MAX=64
 ```
 
 `CONFIG_ZW3021_ENROLL_BEHAVIOR` / `_DELETE_BEHAVIOR` / `_CLEAR_BEHAVIOR` must

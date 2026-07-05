@@ -846,6 +846,13 @@
     enrollElapsedTimer = setInterval(updateElapsed, 1000);
     enrollModal.classList.add("visible");
 
+    // Enrollment is timing-sensitive on the sensor's UART link; stop the
+    // background get_status poll for its duration so it isn't competing
+    // for BLE airtime (confirmed on real hardware: frequent notifications
+    // exhausted the BLE stack's TX buffers and that appeared to disrupt
+    // the sensor's own UART handshake timing).
+    stopStatusPolling();
+
     clearInterval(enrollTimer);
     enrollTimer = setInterval(async () => {
       try {
@@ -859,6 +866,7 @@
           enrollModalText.textContent = "登録処理が終了しました。" +
             "成功/失敗の詳細はセンサーのログでのみ確認できます(このRPCは区別しません)。";
           enrollModalElapsed.textContent = "下の一覧を更新して結果を確認してください。";
+          startStatusPolling();
           if (selectedSlot !== null) refreshFingers();
         }
       } catch (e) {
@@ -871,6 +879,7 @@
     enrollModal.classList.remove("visible");
     clearInterval(enrollElapsedTimer);
     enrollElapsedTimer = null;
+    if (!enrollTimer) startStatusPolling();
     clearInterval(enrollTimer);
     enrollTimer = null;
   });
