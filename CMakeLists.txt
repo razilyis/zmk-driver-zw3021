@@ -11,3 +11,7 @@ zephyr_library_sources_ifdef(CONFIG_ZW3021_DELETE_BEHAVIOR src/behavior_zw3021_d
 zephyr_library_sources_ifdef(CONFIG_ZW3021_CLEAR_BEHAVIOR src/behavior_zw3021_clear.c)
 zephyr_library_sources_ifdef(CONFIG_ZW3021_STORAGE src/storage.c)
 zephyr_library_sources_ifdef(CONFIG_ZW3021_SERIAL_RPC src/serial_rpc.c)
+zephyr_library_sources_ifdef(CONFIG_ZW3021_BLE_RPC src/ble_rpc.c)
+if(CONFIG_ZW3021_SERIAL_RPC OR CONFIG_ZW3021_BLE_RPC)
+    zephyr_library_sources(src/rpc_commands.c)
+endif()

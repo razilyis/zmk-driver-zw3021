@@ -190,15 +190,27 @@
 <body>
 <main>
   <h1>ZW3021 設定</h1>
-  <p class="subtitle">指紋センサー: USBシリアル経由で指ごとの出力文字列と登録を管理します。</p>
+  <p class="subtitle">指紋センサー: USBまたはBluetooth経由で指ごとの出力文字列と登録を管理します。</p>
 
   <div id="connectScreen">
-    <button id="connectBtn">デバイスに接続</button>
+    <div class="row" style="justify-content:center; flex-wrap:wrap;">
+      <div style="flex:none;"><button id="connectUsbBtn">USBで接続</button></div>
+      <div style="flex:none;"><button id="connectBleBtn">Bluetoothで接続</button></div>
+    </div>
     <p>
-      Chrome または Edge 89以上(Web Serial API)、かつsecure context
-      (HTTPS・localhost・ローカルファイル)が必要です。ZW3021センサーが
-      付いているキーボードの半分をUSB接続してから「接続」をクリックし、
-      ブラウザのデバイス選択ダイアログでそのシリアルポートを選んでください。
+      Chrome または Edge 89以上、かつsecure context(HTTPS・localhost・
+      ローカルファイル)が必要です。
+    </p>
+    <p>
+      <strong>USBで接続</strong>: ZW3021センサーが付いているキーボードの
+      半分をUSB接続してからクリックし、ブラウザのポート選択ダイアログで
+      そのシリアルポートを選んでください(Web Serial API)。
+    </p>
+    <p>
+      <strong>Bluetoothで接続</strong>: センサー側キーボードの電源が
+      入っていれば配線不要です。クリックしてデバイス選択ダイアログで
+      このキーボードを選んでください(Web Bluetooth API)。初回接続時は
+      OSのペアリングが必要になることがあります。
     </p>
   </div>
 
@@ -426,9 +438,132 @@
     }
   }
 
+  /* ---- Minimal BLE RPC transport ------------------------------------
+   * Talks to the standalone GATT service in zmk-driver-zw3021/src/ble_rpc.c
+   * (unrelated to ZMK Studio). Same request/response JSON shape and
+   * newline framing as SerialRpc above -- only the byte transport
+   * differs, so a single characteristic write may need to be split into
+   * several GATT writes (the firmware just feeds every byte it receives
+   * into the same brace-balance parser regardless of how many separate
+   * writes they arrived in).
+   */
+  const BLE_SERVICE_UUID = "3dbb63ed-a039-44dd-a1ed-ac9710c5c8c8";
+  const BLE_REQUEST_CHRC_UUID = "e893459f-555a-40e3-9247-08ffa74bc37d";
+  const BLE_RESPONSE_CHRC_UUID = "a11fbda1-5857-4073-a78d-1597c55edb0e";
+  const BLE_WRITE_CHUNK_SIZE = 20; /* conservative: matches the default un-negotiated ATT MTU */
+
+  class BluetoothRpc {
+    constructor() {
+      this.device = null;
+      this.requestChar = null;
+      this.responseChar = null;
+      this.rxBuffer = "";
+      this.nextReqId = 1;
+      this.pending = new Map();
+      this.onLog = () => {};
+      this.onDisconnect = () => {};
+      this._onValueChanged = (event) => {
+        const decoder = new TextDecoder();
+        this.rxBuffer += decoder.decode(event.target.value);
+        this._drainBuffer();
+      };
+    }
+
+    async connect() {
+      const device = await navigator.bluetooth.requestDevice({
+        filters: [{ services: [BLE_SERVICE_UUID] }],
+      });
+      device.addEventListener("gattserverdisconnected", () => this.onDisconnect());
+
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService(BLE_SERVICE_UUID);
+      this.requestChar = await service.getCharacteristic(BLE_REQUEST_CHRC_UUID);
+      this.responseChar = await service.getCharacteristic(BLE_RESPONSE_CHRC_UUID);
+      await this.responseChar.startNotifications();
+      this.responseChar.addEventListener("characteristicvaluechanged", this._onValueChanged);
+      this.device = device;
+    }
+
+    async disconnect() {
+      try { this.device?.gatt?.disconnect(); } catch (e) {}
+      this.device = null;
+      this.requestChar = null;
+      this.responseChar = null;
+      for (const { reject, timeoutId } of this.pending.values()) {
+        clearTimeout(timeoutId);
+        reject(new Error("切断されました"));
+      }
+      this.pending.clear();
+    }
+
+    _drainBuffer() {
+      let idx;
+      while ((idx = this.rxBuffer.indexOf("\n")) >= 0) {
+        const line = this.rxBuffer.slice(0, idx).replace(/\r$/, "");
+        this.rxBuffer = this.rxBuffer.slice(idx + 1);
+        if (line.length > 0) this._handleLine(line);
+      }
+    }
+
+    _handleLine(line) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("{")) {
+        this.onLog("fw", trimmed);
+        return;
+      }
+      let msg;
+      try {
+        msg = JSON.parse(trimmed);
+      } catch (e) {
+        this.onLog("fw", trimmed);
+        return;
+      }
+      this.onLog("rx", trimmed);
+      const entry = this.pending.get(msg.req_id);
+      if (!entry) {
+        if (msg.ok === false) this.onLog("err", "対応するリクエストのないエラー: " + (msg.message || ""));
+        return;
+      }
+      this.pending.delete(msg.req_id);
+      clearTimeout(entry.timeoutId);
+      if (msg.ok) entry.resolve(msg.data || {});
+      else entry.reject(new Error(msg.message || "不明なエラー"));
+    }
+
+    async _writeChunked(bytes) {
+      for (let offset = 0; offset < bytes.length; offset += BLE_WRITE_CHUNK_SIZE) {
+        const chunk = bytes.slice(offset, offset + BLE_WRITE_CHUNK_SIZE);
+        await this.requestChar.writeValueWithResponse(chunk);
+      }
+    }
+
+    send(cmd, extra) {
+      if (!this.requestChar) return Promise.reject(new Error("未接続です"));
+      const reqId = this.nextReqId++;
+      const payload = Object.assign({ cmd, req_id: reqId }, extra || {});
+      const line = JSON.stringify(payload);
+
+      return new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          this.pending.delete(reqId);
+          reject(new Error(cmd + " への応答がタイムアウトしました"));
+        }, COMMAND_TIMEOUT_MS);
+        this.pending.set(reqId, { resolve, reject, timeoutId });
+
+        this.onLog("tx", line);
+        const bytes = new TextEncoder().encode(line + "\n");
+        this._writeChunked(bytes).catch((e) => {
+          clearTimeout(timeoutId);
+          this.pending.delete(reqId);
+          reject(e);
+        });
+      });
+    }
+  }
+
   /* ---- UI wiring --------------------------------------------------- */
 
-  const rpc = new SerialRpc();
+  let rpc = null;
   let statusTimer = null;
   let enrollTimer = null;
   let enrollElapsedTimer = null;
@@ -460,7 +595,6 @@
     debugLog.scrollTop = debugLog.scrollHeight;
     while (debugLog.childNodes.length > 400) debugLog.removeChild(debugLog.firstChild);
   }
-  rpc.onLog = logLine;
 
   function setConnected(connected) {
     el("connDot").className = "dot " + (connected ? "on" : "off");
@@ -479,26 +613,41 @@
     }
   }
 
-  rpc.onDisconnect = () => {
-    setConnected(false);
-    showToast("デバイスが切断されました", true);
-  };
-
-  el("connectBtn").addEventListener("click", async () => {
-    if (!("serial" in navigator)) {
-      showToast("Web SerialにはChromeまたはEdge 89以上が必要です", true);
-      return;
-    }
+  async function connectWith(instance) {
+    instance.onLog = logLine;
+    instance.onDisconnect = () => {
+      setConnected(false);
+      showToast("デバイスが切断されました", true);
+    };
+    rpc = instance;
     try {
       await rpc.connect();
       setConnected(true);
       await rpc.send("ping");
     } catch (e) {
+      rpc = null;
       showToast("接続に失敗しました: " + e.message, true);
     }
+  }
+
+  el("connectUsbBtn").addEventListener("click", () => {
+    if (!("serial" in navigator)) {
+      showToast("Web SerialにはChromeまたはEdge 89以上が必要です", true);
+      return;
+    }
+    connectWith(new SerialRpc());
+  });
+
+  el("connectBleBtn").addEventListener("click", () => {
+    if (!("bluetooth" in navigator)) {
+      showToast("Web BluetoothにはChromeまたはEdge 89以上が必要です", true);
+      return;
+    }
+    connectWith(new BluetoothRpc());
   });
 
   el("disconnectBtn").addEventListener("click", async () => {
+    if (!rpc) return;
     await rpc.disconnect();
     setConnected(false);
   });

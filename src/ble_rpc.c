@@ -1,0 +1,276 @@
+/*
+ * Standalone BLE GATT transport for the JSON RPC command dispatch in
+ * src/rpc_commands.c, letting a browser (Web Bluetooth) configure the
+ * sensor without a USB cable and without depending on ZMK Studio or the
+ * split link to the central half.
+ *
+ * This is a second, independent BLE connection/advertising set on top of
+ * whatever ZMK's own split link (peripheral.c) is doing -- that file is
+ * untouched. ZMK's peripheral.c only does directed advertising to the
+ * already-known central, which a browser could never discover; this file
+ * runs its own undirected, connectable extended-advertising set
+ * (CONFIG_BT_EXT_ADV_MAX_ADV_SET must be >= 2) so a browser can find and
+ * connect to this board as a second, unrelated peer.
+ *
+ * Protocol is identical to serial_rpc.c's (see rpc_commands.c): flat JSON
+ * lines, brace-balance framed. The GATT service/characteristic UUIDs here
+ * are our own, unrelated to ZMK Studio's.
+ *
+ * Security: both characteristics require an encrypted connection
+ * (BT_GATT_PERM_*_ENCRYPT), forcing BLE pairing/bonding before any RPC
+ * command works -- consistent with rpc_commands.c's write-only design:
+ * the goal is that nobody can read or write a fingerprint's output string
+ * without first pairing with the physical device.
+ */
+
+#include "zw3021_rpc_commands.h"
+
+#include <string.h>
+
+#include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/conn.h>
+#include <zephyr/bluetooth/gatt.h>
+#include <zephyr/bluetooth/uuid.h>
+#include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
+#include <zephyr/sys/ring_buffer.h>
+
+LOG_MODULE_REGISTER(zw3021_ble_rpc, CONFIG_ZMK_LOG_LEVEL);
+
+/* Randomly generated, unrelated to ZMK Studio's UUIDs. */
+#define ZW3021_BLE_SERVICE_UUID                                                                  \
+    BT_UUID_128_ENCODE(0x3dbb63ed, 0xa039, 0x44dd, 0xa1ed, 0xac9710c5c8c8)
+#define ZW3021_BLE_REQUEST_CHRC_UUID                                                              \
+    BT_UUID_128_ENCODE(0xe893459f, 0x555a, 0x40e3, 0x9247, 0x08ffa74bc37d)
+#define ZW3021_BLE_RESPONSE_CHRC_UUID                                                             \
+    BT_UUID_128_ENCODE(0xa11fbda1, 0x5857, 0x4073, 0xa78d, 0x1597c55edb0e)
+
+#define ZW3021_BLE_LINE_MAX 176
+#define ZW3021_BLE_TX_RINGBUF_LEN 512
+
+static char rx_line[ZW3021_BLE_LINE_MAX];
+static uint16_t rx_pos;
+static int rx_brace_depth;
+static bool rx_in_string;
+static bool rx_escape_next;
+
+static char pending_line[ZW3021_BLE_LINE_MAX];
+K_SEM_DEFINE(pending_line_sem, 0, 1);
+
+static struct bt_conn *ble_rpc_conn;
+static struct bt_le_ext_adv *ble_rpc_adv;
+
+RING_BUF_DECLARE(tx_ring_buf, ZW3021_BLE_TX_RINGBUF_LEN);
+
+static uint16_t notify_size_for_conn(struct bt_conn *conn) {
+    uint16_t size = 20; /* default ATT payload unless negotiated higher */
+    struct bt_conn_info info;
+    if (conn && bt_conn_get_info(conn, &info) >= 0 && info.le.data_len) {
+        size = info.le.data_len->tx_max_len;
+    }
+    return size;
+}
+
+static void tx_work_handler(struct k_work *work) {
+    ARG_UNUSED(work);
+
+    if (!ble_rpc_conn) {
+        ring_buf_reset(&tx_ring_buf);
+        return;
+    }
+
+    uint16_t chunk_size = notify_size_for_conn(ble_rpc_conn);
+    uint8_t chunk[chunk_size];
+
+    while (ring_buf_size_get(&tx_ring_buf) > 0) {
+        uint32_t got = ring_buf_get(&tx_ring_buf, chunk, chunk_size);
+        if (got == 0) {
+            break;
+        }
+
+        struct bt_gatt_notify_params params = {0};
+        static struct bt_uuid_128 resp_uuid = BT_UUID_INIT_128(ZW3021_BLE_RESPONSE_CHRC_UUID);
+        params.uuid = &resp_uuid.uuid;
+        params.data = chunk;
+        params.len = got;
+
+        int attempts = 5;
+        int err;
+        do {
+            err = bt_gatt_notify_cb(ble_rpc_conn, &params);
+            if (err == 0 || err == -ENOTCONN) {
+                break;
+            }
+            k_sleep(K_MSEC(20));
+        } while (attempts-- > 0);
+
+        if (err) {
+            LOG_WRN("zw3021: BLE RPC notify failed: %d", err);
+            break;
+        }
+    }
+}
+
+static K_WORK_DEFINE(tx_work, tx_work_handler);
+
+static void ble_rpc_transmit(const char *data, size_t len) {
+    if (!ble_rpc_conn) {
+        return;
+    }
+    ring_buf_put(&tx_ring_buf, (const uint8_t *)data, len);
+    k_work_submit(&tx_work);
+}
+
+static void feed_byte(uint8_t b) {
+    if (rx_pos == 0 && (b == '\n' || b == '\r' || b == ' ')) {
+        return;
+    }
+
+    if (rx_pos >= sizeof(rx_line) - 1) {
+        rx_pos = 0;
+        rx_brace_depth = 0;
+        rx_in_string = false;
+        rx_escape_next = false;
+        zw3021_rpc_send_framing_error("line too long", ble_rpc_transmit);
+        return;
+    }
+
+    rx_line[rx_pos++] = (char)b;
+
+    if (rx_escape_next) {
+        rx_escape_next = false;
+    } else if (rx_in_string && b == '\\') {
+        rx_escape_next = true;
+    } else if (b == '"') {
+        rx_in_string = !rx_in_string;
+    } else if (!rx_in_string && b == '{') {
+        rx_brace_depth++;
+    } else if (!rx_in_string && b == '}' && rx_brace_depth > 0) {
+        rx_brace_depth--;
+        if (rx_brace_depth == 0) {
+            rx_line[rx_pos] = '\0';
+            /* Hand off to the processing thread rather than blocking the
+             * BT RX context (matches ZMK Studio's own rpc.c pattern). */
+            strncpy(pending_line, rx_line, sizeof(pending_line) - 1);
+            pending_line[sizeof(pending_line) - 1] = '\0';
+            rx_pos = 0;
+            k_sem_give(&pending_line_sem);
+        }
+    }
+}
+
+static ssize_t on_request_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                 const void *buf, uint16_t len, uint16_t offset, uint8_t flags) {
+    ARG_UNUSED(conn);
+    ARG_UNUSED(attr);
+    ARG_UNUSED(offset);
+    ARG_UNUSED(flags);
+
+    const uint8_t *bytes = buf;
+    for (uint16_t i = 0; i < len; i++) {
+        feed_byte(bytes[i]);
+    }
+    return len;
+}
+
+static void on_response_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
+    ARG_UNUSED(attr);
+    LOG_DBG("zw3021: BLE RPC notifications %s", value == BT_GATT_CCC_NOTIFY ? "enabled" : "disabled");
+}
+
+BT_GATT_SERVICE_DEFINE(zw3021_rpc_svc, BT_GATT_PRIMARY_SERVICE(BT_UUID_DECLARE_128(ZW3021_BLE_SERVICE_UUID)),
+                        BT_GATT_CHARACTERISTIC(BT_UUID_DECLARE_128(ZW3021_BLE_REQUEST_CHRC_UUID),
+                                                BT_GATT_CHRC_WRITE, BT_GATT_PERM_WRITE_ENCRYPT, NULL,
+                                                on_request_write, NULL),
+                        BT_GATT_CHARACTERISTIC(BT_UUID_DECLARE_128(ZW3021_BLE_RESPONSE_CHRC_UUID),
+                                                BT_GATT_CHRC_NOTIFY, BT_GATT_PERM_NONE, NULL, NULL,
+                                                NULL),
+                        BT_GATT_CCC(on_response_ccc_changed,
+                                    BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT));
+
+static void rpc_processing_thread(void *p1, void *p2, void *p3) {
+    ARG_UNUSED(p1);
+    ARG_UNUSED(p2);
+    ARG_UNUSED(p3);
+
+    for (;;) {
+        k_sem_take(&pending_line_sem, K_FOREVER);
+        zw3021_rpc_process_line(pending_line, ble_rpc_transmit);
+    }
+}
+
+K_THREAD_DEFINE(zw3021_ble_rpc_tid, 2048, rpc_processing_thread, NULL, NULL, NULL, 10, 0, 0);
+
+static int start_advertising(void);
+
+static void on_ext_adv_connected(struct bt_le_ext_adv *adv, struct bt_le_ext_adv_connected_info *info) {
+    ARG_UNUSED(adv);
+    ble_rpc_conn = info->conn;
+    LOG_INF("zw3021: BLE RPC client connected");
+}
+
+static struct bt_le_ext_adv_cb ext_adv_cb = {
+    .connected = on_ext_adv_connected,
+};
+
+static void on_disconnected(struct bt_conn *conn, uint8_t reason) {
+    ARG_UNUSED(reason);
+    if (conn != ble_rpc_conn) {
+        return;
+    }
+    LOG_INF("zw3021: BLE RPC client disconnected");
+    ble_rpc_conn = NULL;
+    ring_buf_reset(&tx_ring_buf);
+    rx_pos = 0;
+    rx_brace_depth = 0;
+    rx_in_string = false;
+    rx_escape_next = false;
+    start_advertising();
+}
+
+BT_CONN_CB_DEFINE(zw3021_ble_rpc_conn_cb) = {
+    .disconnected = on_disconnected,
+};
+
+/* No device-name field here: FLAGS (3 bytes) + a 128-bit service UUID
+ * (18 bytes) already use most of the legacy 31-byte advertising payload
+ * budget, and Web Bluetooth clients match by service UUID (see
+ * docs/index.html), not by name. */
+static const struct bt_data ad[] = {
+    BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+    BT_DATA_BYTES(BT_DATA_UUID128_ALL, ZW3021_BLE_SERVICE_UUID),
+};
+
+static int start_advertising(void) {
+    if (!ble_rpc_adv) {
+        /* Plain BT_LE_ADV_CONN (no BT_LE_ADV_OPT_USE_NAME): the explicit
+         * ad[] below already uses most of the legacy 31-byte advertising
+         * payload budget, and clients match by service UUID, not name. */
+        int err = bt_le_ext_adv_create(BT_LE_ADV_CONN, &ext_adv_cb, &ble_rpc_adv);
+        if (err) {
+            LOG_ERR("zw3021: failed to create BLE RPC advertising set: %d", err);
+            return err;
+        }
+    }
+
+    int err = bt_le_ext_adv_set_data(ble_rpc_adv, ad, ARRAY_SIZE(ad), NULL, 0);
+    if (err) {
+        LOG_ERR("zw3021: failed to set BLE RPC advertising data: %d", err);
+        return err;
+    }
+
+    err = bt_le_ext_adv_start(ble_rpc_adv, NULL);
+    if (err) {
+        LOG_ERR("zw3021: failed to start BLE RPC advertising: %d", err);
+        return err;
+    }
+
+    LOG_INF("zw3021: BLE RPC advertising started");
+    return 0;
+}
+
+static int zw3021_ble_rpc_init(void) {
+    return start_advertising();
+}
+
+SYS_INIT(zw3021_ble_rpc_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);

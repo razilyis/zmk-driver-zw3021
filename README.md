@@ -5,8 +5,8 @@ ZMK external module driver for the HLK-ZW3021 fingerprint sensor.
 ## Status
 
 Phase 1 (auto-identify), Phase 3 (enroll/delete/clear), Phase 2
-(per-fingerprint-ID keystroke output on match), and Phase 4 (Web Serial
-browser UI, `docs/index.html`) are implemented:
+(per-fingerprint-ID keystroke output on match), and Phase 4 (Web Serial /
+Web Bluetooth browser UI, `docs/index.html`) are implemented:
 
 ```text
 finger placed → INT rising edge → VCC-D on → boot confirmed → PS_HandShake
@@ -234,14 +234,25 @@ fingerprint ID, via `src/storage.c` -- the same pattern as
 the same NVS instance under a disjoint key range so it can never collide
 with a fingerprint ID.
 
-### 2. Serial RPC (`CONFIG_ZW3021_SERIAL_RPC`)
+### 2. RPC command core (`src/rpc_commands.c`) + two transports
 
-The only way to get a string into that NVS partition is over a line-based
-JSON RPC server (`src/serial_rpc.c`) on the same USB CDC-ACM console
-already used for logging (requires the `zmk-usb-logging` snippet) --
-modeled on `zmk-module-Fingerprint/src/serial_rpc.c`, simplified to a
-smaller command set and a flatter (unnested) JSON shape so a browser Web
-Serial UI can be connected later without a backend rewrite:
+The only way to get a string into that NVS partition is over a JSON RPC
+protocol -- the command dispatch itself (`src/rpc_commands.c`) is
+transport-agnostic and shared by two independent transports, either or
+both of which can be enabled:
+
+- **`CONFIG_ZW3021_SERIAL_RPC`** (`src/serial_rpc.c`): a line-based
+  console on the same USB CDC-ACM stream already used for logging
+  (requires the `zmk-usb-logging` snippet) -- modeled on
+  `zmk-module-Fingerprint/src/serial_rpc.c`.
+- **`CONFIG_ZW3021_BLE_RPC`** (`src/ble_rpc.c`): a standalone BLE GATT
+  service, letting a browser configure the sensor with no USB cable and
+  no dependency on ZMK Studio or the split link to the central half --
+  see "Standalone BLE RPC" below for how this coexists with the split
+  connection.
+
+Both use the same flat (unnested) JSON shape so a browser UI can talk to
+either one without a backend rewrite:
 
 ```text
 Request:  {"cmd":"<name>","req_id":<int>,"finger_id":<int>,"value":"<str>","enter":<bool>}
@@ -270,9 +281,9 @@ reports whether a value exists and the enter flag; `update_finger` can
 still overwrite it blind, and `docs/index.html` is built around this (its
 "edit" flow always starts from an empty field).
 
-Since logs and RPC responses share one stream, expect them interleaved.
-Test by typing a line directly into the same serial terminal used for
-logs, e.g.:
+Over the serial transport, logs and RPC responses share one stream, so
+expect them interleaved. Test by typing a line directly into the same
+serial terminal used for logs, e.g.:
 
 ```text
 {"cmd":"update_finger","req_id":1,"finger_id":1,"value":"hunter2"}
@@ -283,33 +294,69 @@ logs, e.g.:
 {"ok":true,"req_id":3,"data":{"finger_id":1,"has_value":true,"enter":true}}
 ```
 
-## Web Serial UI (`docs/index.html`)
+### 3. Standalone BLE RPC (`CONFIG_ZW3021_BLE_RPC`)
+
+The fingerprint sensor and its NVS storage only exist on the split
+peripheral half (Left), which has no direct BLE connection to a host --
+only ZMK's own split link to the central half (Right). Rather than
+relaying requests through the central (which would need new, unproven
+split-transport infrastructure -- see `documents/codex_zw3021_driver_spec.md`
+section 13 for the investigation that ruled this out, including why ZMK
+Studio integration was considered and abandoned), `src/ble_rpc.c` runs a
+**second, independent BLE connection directly on the peripheral half**:
+its own GATT service (own randomly-generated UUIDs, unrelated to ZMK
+Studio's), its own extended-advertising set, running alongside --
+completely separately from -- ZMK's own split-link advertising and
+connection. `zmk/app/src/split/bluetooth/peripheral.c` is not modified.
+
+This needs headroom for a second simultaneous BLE connection and a
+second advertising set on the peripheral half:
+
+```conf
+CONFIG_BT_MAX_CONN=2               # existing split link + this connection
+CONFIG_BT_EXT_ADV_MAX_ADV_SET=2    # existing split advertising + this one
+CONFIG_BT_USER_DATA_LEN_UPDATE=y   # larger notification payloads
+```
+
+Both GATT characteristics require an encrypted (paired/bonded)
+connection (`BT_GATT_PERM_*_ENCRYPT`) -- consistent with the RPC's
+write-only design, the goal is that nobody can read or write a
+fingerprint's output string without first pairing with the physical
+device. Expect an OS-level BLE pairing prompt on first connection.
+
+## Web Serial / Web Bluetooth UI (`docs/index.html`)
 
 A self-contained, build-free HTML/JS page ([docs/index.html](docs/index.html))
-implements a browser client for the RPC protocol above, using the
-[Web Serial API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Serial_API):
-connect to the sensor side's USB serial port, see which of 5 fixed finger
-slots have an output string configured (never the string itself, per the
-write-only design above), overwrite/delete them, toggle the per-finger
-"send enter" flag, and trigger enrollment with an animated modal -- all
-from a Chrome or Edge tab, no software install required.
+implements a browser client for the RPC protocol above, connecting over
+either transport:
+[Web Serial API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Serial_API)
+(USB) or
+[Web Bluetooth API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Bluetooth_API)
+(no cable). Either way it does the same thing: see which of 5 fixed
+finger slots have an output string configured (never the string itself,
+per the write-only design above), overwrite/delete them, toggle the
+per-finger "send enter" flag, and trigger enrollment with an animated
+modal -- all from a Chrome or Edge tab, no software install required.
 
 Requirements:
-- Chrome or Edge 89+ (Web Serial isn't implemented in Firefox/Safari).
+- Chrome or Edge 89+ (neither API is implemented in Firefox/Safari).
 - A [secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts):
   HTTPS, `localhost`, or opening the file directly (`file://`) all work in
   Chromium. Serving `docs/` via GitHub Pages (repo Settings → Pages →
   deploy from branch, folder `/docs`) is the simplest way to get a stable
   HTTPS URL to share, but is not required -- opening the file locally
   works too.
-- The RPC responses share the same USB CDC-ACM stream as ZMK's log
-  output (see above); the page ignores any line that isn't valid JSON, so
-  log lines show up in its debug panel but don't interfere with the
-  request/response protocol.
+- Over serial, the RPC responses share the same USB CDC-ACM stream as
+  ZMK's log output (see above); the page ignores any line that isn't
+  valid JSON, so log lines show up in its debug panel but don't interfere
+  with the request/response protocol. This doesn't apply to the
+  Bluetooth path, which is its own dedicated GATT service.
+- Over Bluetooth, the first connection will likely prompt an OS-level
+  pairing dialog (see "Standalone BLE RPC" above).
 
-The page never sends anything anywhere except over the local serial
-connection -- there is no server component and no network requests, so
-stored strings never leave the two ends of that USB cable.
+The page never sends anything anywhere except over the local serial or
+Bluetooth connection -- there is no server component and no other network
+requests, so stored strings never leave the device and the browser tab.
 
 ## Kconfig
 
@@ -320,6 +367,12 @@ CONFIG_ZW3021_DELETE_BEHAVIOR=y
 CONFIG_ZW3021_CLEAR_BEHAVIOR=y
 CONFIG_ZW3021_STORAGE=y         # the side with the sensor only
 CONFIG_ZW3021_SERIAL_RPC=y      # the side with the sensor only
+CONFIG_ZW3021_BLE_RPC=y         # the side with the sensor only (optional, see below)
+
+# Only needed if CONFIG_ZW3021_BLE_RPC=y -- see "Standalone BLE RPC" above
+CONFIG_BT_MAX_CONN=2
+CONFIG_BT_EXT_ADV_MAX_ADV_SET=2
+CONFIG_BT_USER_DATA_LEN_UPDATE=y
 ```
 
 `CONFIG_ZW3021_ENROLL_BEHAVIOR` / `_DELETE_BEHAVIOR` / `_CLEAR_BEHAVIOR` must
@@ -412,6 +465,10 @@ No raw fingerprint image, template, or stored-string data is ever logged.
 - The serial RPC server's automated client is new (`docs/index.html`);
   previously it had only been exercised with manually-typed JSON lines.
   Confirm end-to-end against real hardware before relying on it.
+- The standalone BLE RPC (`CONFIG_ZW3021_BLE_RPC`) is new and not yet
+  confirmed on real hardware: whether a second simultaneous BLE
+  connection/advertising set actually coexists cleanly with the existing
+  split link on the peripheral half needs real-hardware verification.
 - `enroll_status` only reports whether the driver is busy, not
   success/failure detail for the enrollment attempt in progress -- the
   Web UI can only tell you when it's done, not whether it succeeded; check

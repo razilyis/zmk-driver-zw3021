@@ -48,4 +48,17 @@ config ZW3021_SERIAL_RPC
       read/write/delete per-fingerprint-ID output strings and trigger
       enrollment without needing to flash new firmware or touch git.
 
+config ZW3021_BLE_RPC
+    bool "Standalone BLE GATT RPC for managing per-ID output strings"
+    depends on ZW3021_STORAGE
+    select BT_EXT_ADV
+    help
+      Adds the same JSON RPC command set as ZW3021_SERIAL_RPC, but over a
+      second, independent BLE connection (its own GATT service and
+      extended-advertising set) instead of USB -- unrelated to ZMK Studio
+      or the split link to the central half. Requires
+      CONFIG_BT_MAX_CONN and CONFIG_BT_EXT_ADV_MAX_ADV_SET to be at least
+      2 in the board's .conf (one for the existing split link, one for
+      this connection); this option only selects BT_EXT_ADV itself.
+
 endif # ZW3021
