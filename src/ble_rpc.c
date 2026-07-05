@@ -205,6 +205,37 @@ K_THREAD_DEFINE(zw3021_ble_rpc_tid, 2048, rpc_processing_thread, NULL, NULL, NUL
 
 static int start_advertising(void);
 
+/* Right after a disconnect, bt_le_ext_adv_start() has been observed to
+ * fail transiently (-ENOMEM on real hardware) -- the Bluetooth stack
+ * needs a moment to reclaim the just-closed connection's resources
+ * before it can start advertising again. Retry with capped exponential
+ * backoff rather than giving up (which would require a power cycle to
+ * reconnect at all). */
+#define BLE_RPC_ADV_RETRY_INITIAL_DELAY_MS 500
+#define BLE_RPC_ADV_RETRY_MAX_DELAY_MS 5000
+
+static uint32_t adv_retry_delay_ms = BLE_RPC_ADV_RETRY_INITIAL_DELAY_MS;
+
+static void start_adv_work_handler(struct k_work *work) {
+    ARG_UNUSED(work);
+    int err = start_advertising();
+    if (err) {
+        LOG_WRN("zw3021: BLE RPC advertising start failed (%d), retrying in %u ms", err,
+                adv_retry_delay_ms);
+        struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+        k_work_schedule(dwork, K_MSEC(adv_retry_delay_ms));
+        adv_retry_delay_ms = MIN(adv_retry_delay_ms * 2, BLE_RPC_ADV_RETRY_MAX_DELAY_MS);
+    } else {
+        adv_retry_delay_ms = BLE_RPC_ADV_RETRY_INITIAL_DELAY_MS;
+    }
+}
+
+static K_WORK_DELAYABLE_DEFINE(start_adv_work, start_adv_work_handler);
+
+static void schedule_advertising_start(uint32_t delay_ms) {
+    k_work_schedule(&start_adv_work, K_MSEC(delay_ms));
+}
+
 static void on_ext_adv_connected(struct bt_le_ext_adv *adv, struct bt_le_ext_adv_connected_info *info) {
     ARG_UNUSED(adv);
     ble_rpc_conn = info->conn;
@@ -227,7 +258,7 @@ static void on_disconnected(struct bt_conn *conn, uint8_t reason) {
     rx_brace_depth = 0;
     rx_in_string = false;
     rx_escape_next = false;
-    start_advertising();
+    schedule_advertising_start(BLE_RPC_ADV_RETRY_INITIAL_DELAY_MS);
 }
 
 BT_CONN_CB_DEFINE(zw3021_ble_rpc_conn_cb) = {
@@ -294,7 +325,8 @@ static int ble_rpc_settings_set(const char *name, size_t len, settings_read_cb r
 }
 
 static int ble_rpc_settings_commit(void) {
-    return start_advertising();
+    schedule_advertising_start(0);
+    return 0;
 }
 
 static struct settings_handler zw3021_ble_rpc_settings_handler = {
@@ -308,7 +340,8 @@ static int zw3021_ble_rpc_init(void) {
 #if IS_ENABLED(CONFIG_SETTINGS)
     return settings_register(&zw3021_ble_rpc_settings_handler);
 #else
-    return start_advertising();
+    schedule_advertising_start(0);
+    return 0;
 #endif
 }
 
