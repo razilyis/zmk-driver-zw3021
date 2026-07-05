@@ -315,8 +315,17 @@ second advertising set on the peripheral half:
 ```conf
 CONFIG_BT_MAX_CONN=2               # existing split link + this connection
 CONFIG_BT_EXT_ADV_MAX_ADV_SET=2    # existing split advertising + this one
+CONFIG_BT_MAX_PAIRED=2             # existing bond with the central + this one
 CONFIG_BT_USER_DATA_LEN_UPDATE=y   # larger notification payloads
 ```
+
+`CONFIG_BT_MAX_PAIRED` is easy to miss: the peripheral half has no
+`ZMK_SPLIT_ROLE_CENTRAL`-specific override for it (that only applies to
+the central), so it silently falls back to Zephyr's stock default of
+**1** -- already consumed by the bond with the central. Without bumping
+it, pairing with a browser appears to succeed, but the encrypted CCC
+write required to enable notifications fails with a generic "GATT
+operation failed for unknown reason" (confirmed on real hardware).
 
 Both GATT characteristics require an encrypted (paired/bonded)
 connection (`BT_GATT_PERM_*_ENCRYPT`) -- consistent with the RPC's
@@ -372,6 +381,7 @@ CONFIG_ZW3021_BLE_RPC=y         # the side with the sensor only (optional, see b
 # Only needed if CONFIG_ZW3021_BLE_RPC=y -- see "Standalone BLE RPC" above
 CONFIG_BT_MAX_CONN=2
 CONFIG_BT_EXT_ADV_MAX_ADV_SET=2
+CONFIG_BT_MAX_PAIRED=2
 CONFIG_BT_USER_DATA_LEN_UPDATE=y
 ```
 
