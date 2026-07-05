@@ -629,14 +629,22 @@
       setConnected(false);
       showToast("デバイスが切断されました", true);
     };
-    rpc = instance;
     try {
-      await rpc.connect();
-      setConnected(true);
+      await instance.connect();
+    } catch (e) {
+      showToast("接続に失敗しました: " + e.message, true);
+      return;
+    }
+    // The connection itself succeeded past this point, so keep rpc set
+    // even if the initial ping below fails/times out (e.g. transient BLE
+    // congestion right after connecting) -- losing the reference here
+    // would strand a perfectly usable connection.
+    rpc = instance;
+    setConnected(true);
+    try {
       await rpc.send("ping");
     } catch (e) {
-      rpc = null;
-      showToast("接続に失敗しました: " + e.message, true);
+      showToast("ping に失敗しました(接続は維持されます): " + e.message, true);
     }
   }
 
