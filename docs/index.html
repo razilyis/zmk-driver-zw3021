@@ -757,13 +757,25 @@
 
   function startStatusPolling() {
     stopStatusPolling();
+    let inFlight = false;
     const poll = async () => {
+      // Skip this tick if the previous get_status hasn't come back yet --
+      // firing on a fixed timer regardless of outstanding requests let
+      // polls pile up faster than the (slow, UART-safe) BLE connection
+      // interval could answer them, pushing every other command's
+      // response further and further behind (confirmed on real hardware:
+      // enroll_start's own ack was delayed 8+ seconds by a backlog of
+      // overlapping get_status polls).
+      if (inFlight) return;
+      inFlight = true;
       try {
         const data = await rpc.send("get_status");
         el("busyDot").className = "dot " + (data.busy ? "busy" : "on");
         el("busyLabel").textContent = data.busy ? "動作中" : "待機中";
       } catch (e) {
         /* transient - next poll will retry */
+      } finally {
+        inFlight = false;
       }
     };
     poll();
@@ -872,10 +884,17 @@
   el("slotEnrollBtn").addEventListener("click", async () => {
     if (selectedSlot === null) return;
     const id = selectedSlot;
+    // Stop background get_status polling *before* sending enroll_start,
+    // not after it resolves -- otherwise polls already in flight keep
+    // competing with enroll_start's own request/response on the slow
+    // BLE connection interval and can delay its ack past the client
+    // timeout (confirmed on real hardware).
+    stopStatusPolling();
     try {
       await rpc.send("enroll_start", { finger_id: id });
     } catch (e) {
       showToast("登録の開始に失敗しました: " + e.message, true);
+      startStatusPolling();
       return;
     }
     openEnrollModal(id);
@@ -895,15 +914,15 @@
     enrollElapsedTimer = setInterval(updateElapsed, 1000);
     enrollModal.classList.add("visible");
 
-    // Enrollment is timing-sensitive on the sensor's UART link; stop the
-    // background get_status poll for its duration so it isn't competing
-    // for BLE airtime (confirmed on real hardware: frequent notifications
-    // exhausted the BLE stack's TX buffers and that appeared to disrupt
-    // the sensor's own UART handshake timing).
+    // get_status polling was already stopped before enroll_start was sent
+    // (see the click handler above); this is just a safety net.
     stopStatusPolling();
 
     clearInterval(enrollTimer);
+    let enrollPollInFlight = false;
     enrollTimer = setInterval(async () => {
+      if (enrollPollInFlight) return;
+      enrollPollInFlight = true;
       try {
         const data = await rpc.send("enroll_status");
         if (!data.busy) {
@@ -920,6 +939,8 @@
         }
       } catch (e) {
         /* transient - next poll will retry */
+      } finally {
+        enrollPollInFlight = false;
       }
     }, ENROLL_POLL_MS);
   }
