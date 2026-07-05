@@ -221,6 +221,7 @@
         <div><span class="dot" id="busyDot"></span> ステータス: <span id="busyLabel">不明</span></div>
         <div style="text-align:right;"><button id="disconnectBtn">切断</button></div>
       </div>
+      <p class="note" id="bleStabilizeNote" style="display:none;"></p>
     </div>
 
     <div class="card">
@@ -644,6 +645,46 @@
     while (debugLog.childNodes.length > 400) debugLog.removeChild(debugLog.firstChild);
   }
 
+  // Confirmed on real hardware: right after a Bluetooth connection is
+  // established, the driver requests a much longer BLE connection
+  // interval (see ble_rpc.c) to stop it from disrupting the sensor's
+  // UART timing, but that renegotiation takes a few seconds. Sensor
+  // operations (enrollment) attempted before it completes can fail/
+  // time out. USB (Web Serial) has no such warm-up period.
+  const BLE_STABILIZE_SECONDS = 6;
+  let bleStabilizeTimer = null;
+
+  function startBleStabilizeCountdown() {
+    const note = el("bleStabilizeNote");
+    const enrollBtn = el("slotEnrollBtn");
+    enrollBtn.disabled = true;
+    let remaining = BLE_STABILIZE_SECONDS;
+    const tick = () => {
+      note.style.display = "block";
+      note.textContent =
+        `Bluetooth接続の安定を待っています(あと${remaining}秒)... ` +
+        "この間は指の登録がうまく動かないことがあります。";
+      if (remaining <= 0) {
+        clearInterval(bleStabilizeTimer);
+        bleStabilizeTimer = null;
+        note.style.display = "none";
+        enrollBtn.disabled = false;
+        return;
+      }
+      remaining--;
+    };
+    tick();
+    clearInterval(bleStabilizeTimer);
+    bleStabilizeTimer = setInterval(tick, 1000);
+  }
+
+  function stopBleStabilizeCountdown() {
+    clearInterval(bleStabilizeTimer);
+    bleStabilizeTimer = null;
+    el("bleStabilizeNote").style.display = "none";
+    el("slotEnrollBtn").disabled = false;
+  }
+
   function setConnected(connected) {
     el("connDot").className = "dot " + (connected ? "on" : "off");
     el("connLabel").textContent = connected ? `${rpc.label}: 接続中` : "未接続";
@@ -652,8 +693,14 @@
     if (connected) {
       startStatusPolling();
       refreshFingers();
+      if (rpc.label === "Bluetooth") {
+        startBleStabilizeCountdown();
+      } else {
+        stopBleStabilizeCountdown();
+      }
     } else {
       stopStatusPolling();
+      stopBleStabilizeCountdown();
       clearInterval(enrollTimer);
       enrollTimer = null;
       selectedSlot = null;
