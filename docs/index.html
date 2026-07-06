@@ -1024,22 +1024,49 @@
     const name = el("slotNameInput").value;
     const prevInfo = slotInfo.get(id);
     const nameChanged = name !== (prevInfo ? prevInfo.name || "" : "");
-    try {
-      await withStatusPollingPaused(async () => {
-        if (value) {
+
+    // Each field is saved independently -- one slow/failed RPC call (most
+    // commonly update_finger under BLE latency) must not silently block
+    // the others from being attempted, or a single timeout looks like
+    // "the whole save failed" even though e.g. the name would have gone
+    // through fine on its own.
+    const failures = [];
+    let valueSaveFailed = false;
+    await withStatusPollingPaused(async () => {
+      if (value) {
+        try {
           await rpc.send("update_finger", { finger_id: id, value });
+        } catch (e) {
+          valueSaveFailed = true;
+          failures.push(`文字列: ${e.message}`);
         }
+      }
+      try {
         await rpc.send("set_finger_enter", { finger_id: id, enter });
-        if (nameChanged) {
+      } catch (e) {
+        failures.push(`Enter設定: ${e.message}`);
+      }
+      if (nameChanged) {
+        try {
           await rpc.send("set_finger_name", { finger_id: id, name });
+        } catch (e) {
+          failures.push(`名前: ${e.message}`);
         }
-      });
+      }
+    });
+
+    if (failures.length === 0) {
       showToast(`指${id}を保存しました`);
-      el("slotValueInput").value = "";
-      refreshFingers();
-    } catch (e) {
-      showToast("保存に失敗しました: " + e.message, true);
+    } else {
+      showToast(`一部保存に失敗しました: ${failures.join(" / ")}`, true);
     }
+    // Only clear the write-only value field if it actually saved (or
+    // wasn't touched) -- if it failed, keep what the user typed so they
+    // don't have to retype it to retry.
+    if (!valueSaveFailed) {
+      el("slotValueInput").value = "";
+    }
+    refreshFingers();
   });
 
   el("slotDeleteBtn").addEventListener("click", async () => {
