@@ -230,9 +230,26 @@ form submitted.
 The string itself is stored in NVS on a dedicated flash partition
 (`zw3021_partition`, see the devicetree section above), keyed by
 fingerprint ID, via `src/storage.c` -- the same pattern as
-`zmk-module-Fingerprint/src/storage.c`. The "send enter" flag is stored in
-the same NVS instance under a disjoint key range so it can never collide
-with a fingerprint ID.
+`zmk-module-Fingerprint/src/storage.c`. The "send enter" flag and a
+non-secret per-ID display name (`set_finger_name`, see below) are stored
+in the same NVS instance under disjoint key ranges so none of them can
+ever collide with a fingerprint ID.
+
+**The output string is encrypted at rest** (AES-128-CTR, via tinycrypt --
+`CONFIG_TINYCRYPT_AES`/`_AES_CTR`/`_SHA256`, selected by
+`CONFIG_ZW3021_STORAGE`). The key is derived every boot from the chip's
+own unique hardware ID (`hwinfo_get_device_id()`) hashed together with a
+fixed salt (`ZW3021_STORAGE_KEY_SALT` in `src/storage.c`); it's never
+written to flash or sent over any wire. This protects against a casual
+flash-dump read of a lost or discarded board, but **not** against an
+attacker with live SWD debug access to the running chip -- the key
+derivation is public source, so anyone who can read the chip's hardware
+ID can reproduce the key. The nRF52840 has no secure element
+(no TrustZone/CryptoCell) and its hardware AES ECB peripheral is claimed
+by the BLE controller (`depends on !BT_CTLR` in Zephyr's
+`drivers/crypto/Kconfig.nrf_ecb`), which is why this uses tinycrypt's
+software AES instead of hardware. The "send enter" flag and display name
+are not secrets and are stored in plaintext.
 
 ### 2. RPC command core (`src/rpc_commands.c`) + two transports
 
@@ -265,10 +282,11 @@ Response: {"ok":true,"req_id":<int>,"data":{...}}
 | `ping` | — | |
 | `get_status` | — | `data.busy` |
 | `get_fingers` | — | `data.ids`: array of IDs with a stored string |
-| `get_finger` | `finger_id` | `data.has_value`, `data.enter` -- **never returns the string itself** |
+| `get_finger` | `finger_id` | `data.has_value`, `data.enter`, `data.name` -- **never returns the string itself**, but `name` (see below) is returned as-is |
 | `update_finger` | `finger_id`, `value` | writes/overwrites the string (write-only) |
-| `delete_finger` | `finger_id` | also clears the "send enter" flag |
+| `delete_finger` | `finger_id` | also clears the "send enter" flag; does **not** clear the display name |
 | `set_finger_enter` | `finger_id`, `enter` | toggles the per-ID "send enter" flag independently of the string |
+| `set_finger_name` | `finger_id`, `name` | sets a non-secret display label for the slot (UTF-8, up to `ZW3021_STORAGE_NAME_MAX_LEN - 1` bytes), independently of the string |
 | `enroll_start` | `finger_id` | wraps `zw3021_request_enroll()` |
 | `enroll_status` | — | `data.busy` |
 | `refresh_enroll_map` | — | queues a `PS_ReadIndexTable` sensor query (IDs 0-255); poll `get_status` until not busy, then call `get_enrolled` |
@@ -281,7 +299,11 @@ every fingerprint's output string without ever touching the sensor,
 defeating the entire point of gating it behind a match. `get_finger` only
 reports whether a value exists and the enter flag; `update_finger` can
 still overwrite it blind, and `docs/index.html` is built around this (its
-"edit" flow always starts from an empty field).
+"edit" flow always starts from an empty field). `data.name` is the one
+exception: it's just a UI label for the slot (e.g. "company PC login"),
+never typed out and not a secret, so it's freely readable and editable
+in place (unlike the string field, `docs/index.html`'s name field shows
+and edits the current value directly).
 
 Over the serial transport, logs and RPC responses share one stream, so
 expect them interleaved. Test by typing a line directly into the same
@@ -390,6 +412,8 @@ CONFIG_ZW3021_ENROLL_BEHAVIOR=y # every side (see below)
 CONFIG_ZW3021_DELETE_BEHAVIOR=y
 CONFIG_ZW3021_CLEAR_BEHAVIOR=y
 CONFIG_ZW3021_STORAGE=y         # the side with the sensor only
+                                 # (auto-selects TINYCRYPT_AES/_AES_CTR/_SHA256 + HWINFO
+                                 # for encrypting the stored output string at rest)
 CONFIG_ZW3021_SERIAL_RPC=y      # the side with the sensor only
 CONFIG_ZW3021_BLE_RPC=y         # the side with the sensor only (optional, see below)
 
@@ -510,6 +534,13 @@ No raw fingerprint image, template, or stored-string data is ever logged.
   of byte 0 = ID 0) is inferred from common practice for this sensor
   family, not stated explicitly in the protocol manual -- confirm it
   matches reality against a known enrolled ID before trusting it broadly.
+- Output-string encryption at rest (see "Per-fingerprint-ID keystroke
+  output" above) only protects against a casual flash-dump read; it does
+  not protect against an attacker with live SWD debug access to the
+  running chip (the key derivation is public source). It also has no
+  migration path: any string stored by a firmware build from before this
+  was added will be misread as encrypted data (garbled output on match,
+  not a crash) and needs to be re-saved with `update_finger` once.
 
 ## Roadmap
 

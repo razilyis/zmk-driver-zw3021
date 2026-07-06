@@ -15,8 +15,8 @@
  *        or {"ok":false,"req_id":<int>,"message":"..."}
  *
  * Supported cmd values: ping, get_status, get_fingers, get_finger,
- * update_finger, delete_finger, set_finger_enter, enroll_start,
- * enroll_status, refresh_enroll_map, get_enrolled.
+ * update_finger, delete_finger, set_finger_enter, set_finger_name,
+ * enroll_start, enroll_status, refresh_enroll_map, get_enrolled.
  *
  * WRITE-ONLY BY DESIGN: get_finger never returns the stored output
  * string, only whether one exists (data.has_value) and the "send enter"
@@ -26,6 +26,10 @@
  * reach either console read out every stored secret without ever
  * triggering a fingerprint match, defeating the point of gating it
  * behind one. update_finger/set_finger_enter can still write blind.
+ * data.name (the slot's display label, set via set_finger_name) is NOT
+ * a secret and IS returned as-is -- it's just a UI label for the slot,
+ * never typed out, and independent of whatever output string is stored
+ * there (delete_finger clears the string/enter flag but not the name).
  */
 
 #include "zw3021.h"
@@ -89,6 +93,33 @@ static int json_find_int(const char *json, const char *key, int def) {
         return atoi(p);
     }
     return def;
+}
+
+/* Escapes '"' and '\' for safe embedding inside a JSON string literal in a
+ * response we build ourselves (needed once a stored value -- the display
+ * name -- can contain arbitrary UTF-8 text instead of only known-safe
+ * primitives like booleans/integers). Drops raw control characters rather
+ * than \u-escaping them: they're not meaningful in a display label anyway.
+ * Truncates safely if it would overflow out_size (never emits a dangling
+ * escape or writes past the buffer).
+ */
+static void json_escape(const char *src, char *out, size_t out_size) {
+    size_t o = 0;
+    for (const char *p = src; *p != '\0' && o + 1 < out_size; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '"' || c == '\\') {
+            if (o + 2 >= out_size) {
+                break;
+            }
+            out[o++] = '\\';
+            out[o++] = (char)c;
+        } else if (c < 0x20) {
+            continue;
+        } else {
+            out[o++] = (char)c;
+        }
+    }
+    out[o] = '\0';
 }
 
 static bool json_find_bool(const char *json, const char *key, bool def) {
@@ -169,16 +200,42 @@ static void cmd_get_finger(const char *line, int req_id, zw3021_rpc_tx_fn tx) {
     }
 
     /* Deliberately does not return the stored value itself -- see the
-     * WRITE-ONLY BY DESIGN note at the top of this file. */
+     * WRITE-ONLY BY DESIGN note at the top of this file. The display name
+     * is not a secret, so it's returned as-is (escaped for JSON safety). */
     char value[ZW3021_STORAGE_MAX_LEN + 1];
     bool has_value = zw3021_storage_get((uint16_t)id, value, sizeof(value)) == 0;
     bool send_enter = false;
     zw3021_storage_get_enter((uint16_t)id, &send_enter);
+    char name[ZW3021_STORAGE_NAME_MAX_LEN + 1] = "";
+    zw3021_storage_get_name((uint16_t)id, name, sizeof(name));
+    char name_esc[ZW3021_STORAGE_NAME_MAX_LEN * 2 + 1];
+    json_escape(name, name_esc, sizeof(name_esc));
 
     char data[ZW3021_RPC_RESPONSE_MAX - 32];
-    snprintf(data, sizeof(data), "{\"finger_id\":%d,\"has_value\":%s,\"enter\":%s}", id,
-             has_value ? "true" : "false", send_enter ? "true" : "false");
+    snprintf(data, sizeof(data), "{\"finger_id\":%d,\"has_value\":%s,\"enter\":%s,\"name\":\"%s\"}", id,
+             has_value ? "true" : "false", send_enter ? "true" : "false", name_esc);
     rpc_send_ok(req_id, data, tx);
+}
+
+static void cmd_set_finger_name(const char *line, int req_id, zw3021_rpc_tx_fn tx) {
+    int id = json_find_int(line, "finger_id", -1);
+    char name[ZW3021_STORAGE_NAME_MAX_LEN + 1];
+
+    if (id <= 0) {
+        rpc_send_error(req_id, "missing or invalid finger_id", tx);
+        return;
+    }
+    if (json_find_string(line, "name", name, sizeof(name)) != 0) {
+        rpc_send_error(req_id, "missing name", tx);
+        return;
+    }
+
+    int ret = zw3021_storage_set_name((uint16_t)id, name);
+    if (ret != 0) {
+        rpc_send_error(req_id, "storage write failed", tx);
+        return;
+    }
+    rpc_send_ok(req_id, NULL, tx);
 }
 
 static void cmd_set_finger_enter(const char *line, int req_id, zw3021_rpc_tx_fn tx) {
@@ -294,6 +351,7 @@ static const struct rpc_command rpc_commands[] = {
     {"update_finger", cmd_update_finger},
     {"delete_finger", cmd_delete_finger},
     {"set_finger_enter", cmd_set_finger_enter},
+    {"set_finger_name", cmd_set_finger_name},
     {"enroll_start", cmd_enroll_start},
     {"enroll_status", cmd_enroll_status},
     {"refresh_enroll_map", cmd_refresh_enroll_map},

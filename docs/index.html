@@ -3,85 +3,130 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <title>ZW3021 設定</title>
 <style>
   :root {
-    --bg: #0f1115;
-    --panel: #171a21;
-    --panel-border: #2a2f3a;
-    --text: #e6e8ec;
-    --text-dim: #8b93a3;
-    --accent: #4f8cff;
-    --accent-dim: #2b3a55;
-    --ok: #3ecf6e;
-    --err: #e5484d;
-    --warn: #e5a144;
+    --bg: #f5f5f7;
+    --bg-glow: rgba(0, 113, 227, 0.06);
+    --panel: #ffffff;
+    --panel-border: rgba(0, 0, 0, 0.08);
+    --text: #1d1d1f;
+    --text-dim: #6e6e73;
+    --accent: #0071e3;
+    --accent-dim: rgba(0, 113, 227, 0.12);
+    --ok: #248a3d;
+    --ok-dim: rgba(36, 138, 61, 0.14);
+    --err: #d70015;
+    --err-dim: rgba(215, 0, 21, 0.1);
+    --warn: #c93400;
+    --warn-dim: rgba(201, 52, 0, 0.14);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+    --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.05), 0 10px 28px rgba(0, 0, 0, 0.07);
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #000000;
+      --bg-glow: rgba(10, 132, 255, 0.09);
+      --panel: #1c1c1e;
+      --panel-border: rgba(255, 255, 255, 0.1);
+      --text: #f5f5f7;
+      --text-dim: #98989d;
+      --accent: #0a84ff;
+      --accent-dim: rgba(10, 132, 255, 0.18);
+      --ok: #30d158;
+      --ok-dim: rgba(48, 209, 88, 0.16);
+      --err: #ff453a;
+      --err-dim: rgba(255, 69, 58, 0.16);
+      --warn: #ff9f0a;
+      --warn-dim: rgba(255, 159, 10, 0.16);
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+      --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.4), 0 14px 36px rgba(0, 0, 0, 0.4);
+    }
   }
   * { box-sizing: border-box; }
   body {
     margin: 0;
     min-height: 100vh;
-    background: var(--bg);
+    background: radial-gradient(1100px 560px at 50% -8%, var(--bg-glow), transparent 60%), var(--bg);
     color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Hiragino Sans", "Segoe UI", Roboto, sans-serif;
     display: flex;
     justify-content: center;
+    -webkit-font-smoothing: antialiased;
   }
   main {
     width: 100%;
     max-width: 720px;
-    padding: 24px 16px 64px;
+    padding: 40px 16px 64px;
   }
-  h1 { font-size: 1.3rem; margin: 0 0 4px; }
-  .subtitle { color: var(--text-dim); font-size: 0.9rem; margin: 0 0 24px; }
+  h1 { font-size: 1.7rem; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 6px; }
+  .subtitle { color: var(--text-dim); font-size: 0.95rem; margin: 0 0 28px; line-height: 1.5; }
   .card {
     background: var(--panel);
     border: 1px solid var(--panel-border);
-    border-radius: 10px;
-    padding: 16px;
+    border-radius: 16px;
+    padding: 20px;
     margin-bottom: 16px;
+    box-shadow: var(--shadow-md);
   }
   .card h2 {
-    font-size: 1rem;
-    margin: 0 0 12px;
+    font-size: 1.05rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 0 0 14px;
     display: flex;
     align-items: center;
     gap: 8px;
   }
   button {
     background: var(--accent-dim);
-    color: var(--text);
-    border: 1px solid var(--accent);
-    border-radius: 6px;
-    padding: 8px 14px;
+    color: var(--accent);
+    border: none;
+    border-radius: 10px;
+    padding: 9px 16px;
     font-size: 0.9rem;
+    font-weight: 600;
+    font-family: inherit;
     cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, transform 0.08s ease;
   }
-  button:hover:not(:disabled) { background: var(--accent); }
+  button:hover:not(:disabled) { background: var(--accent); color: #fff; }
+  button:active:not(:disabled) { transform: scale(0.96); }
   button:disabled { opacity: 0.4; cursor: not-allowed; }
-  button.danger { border-color: var(--err); }
-  button.danger:hover:not(:disabled) { background: var(--err); }
+  button.danger { background: var(--err-dim); color: var(--err); }
+  button.danger:hover:not(:disabled) { background: var(--err); color: #fff; }
   input[type=text] {
-    background: #0d0f14;
+    background: var(--bg);
     border: 1px solid var(--panel-border);
     color: var(--text);
-    border-radius: 6px;
-    padding: 7px 10px;
+    border-radius: 10px;
+    padding: 8px 12px;
     font-size: 0.9rem;
+    font-family: inherit;
     width: 100%;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
+  input[type=text]:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-dim);
+  }
+  input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; }
   label { font-size: 0.8rem; color: var(--text-dim); display: block; margin-bottom: 4px; }
   .row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
   .row > div { flex: 1; min-width: 100px; }
   .dot {
     width: 9px; height: 9px; border-radius: 50%;
     display: inline-block; background: var(--text-dim);
+    transition: background 0.2s ease, box-shadow 0.2s ease;
   }
-  .dot.on { background: var(--ok); }
-  .dot.busy { background: var(--warn); }
-  .dot.off { background: var(--err); }
-  .note { font-size: 0.8rem; color: var(--text-dim); margin-top: 8px; line-height: 1.5; }
+  .dot.on { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-dim); }
+  .dot.busy { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-dim); }
+  .dot.off { background: var(--err); box-shadow: 0 0 0 3px var(--err-dim); }
+  .note { font-size: 0.8rem; color: var(--text-dim); margin-top: 8px; line-height: 1.6; }
 
   /* ---- finger slot grid ---- */
   .slot-grid {
@@ -90,61 +135,98 @@
     gap: 8px;
   }
   .slot-btn {
-    background: #0d0f14;
+    position: relative;
+    background: var(--bg);
     border: 1px solid var(--panel-border);
-    border-radius: 8px;
-    padding: 10px 2px;
+    border-radius: 12px;
+    padding: 12px 2px;
     text-align: center;
     cursor: pointer;
     color: var(--text);
+    transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
   }
-  .slot-btn .slot-num { font-size: 1.15rem; font-weight: 600; }
+  .slot-btn:hover { transform: translateY(-1px); }
+  .slot-btn .slot-num { font-size: 1.2rem; font-weight: 700; }
+  .slot-btn .slot-name {
+    font-size: 0.7rem; font-weight: 600; color: var(--text); margin-top: 2px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 2px;
+  }
   .slot-btn .slot-status { font-size: 0.68rem; color: var(--text-dim); margin-top: 4px; }
   .slot-btn .slot-template-status { font-size: 0.68rem; color: var(--text-dim); margin-top: 2px; }
   .slot-btn.filled { border-color: var(--ok); }
-  .slot-btn.templated .slot-template-status { color: var(--ok); }
+  .slot-btn.filled::after {
+    content: "";
+    position: absolute; top: 8px; right: 8px;
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--ok);
+  }
+  .slot-btn.templated .slot-template-status { color: var(--ok); font-weight: 600; }
   .slot-btn.selected { border-color: var(--accent); background: var(--accent-dim); }
   .slot-detail {
-    margin-top: 16px;
-    padding-top: 16px;
+    margin-top: 18px;
+    padding-top: 18px;
     border-top: 1px solid var(--panel-border);
   }
-  .slot-detail h3 { font-size: 0.95rem; margin: 0 0 12px; }
+  .slot-detail h3 { font-size: 0.95rem; font-weight: 600; margin: 0 0 12px; }
 
-  #connectScreen { text-align: center; padding: 60px 16px; }
-  #connectScreen p { color: var(--text-dim); max-width: 420px; margin: 12px auto 24px; line-height: 1.5; }
+  #connectScreen { text-align: center; padding: 56px 16px 40px; }
+  #connectScreen p { color: var(--text-dim); max-width: 420px; margin: 12px auto 24px; line-height: 1.6; font-size: 0.9rem; }
   #app { display: none; }
   #app.visible { display: block; }
+  .cta-btn { padding: 12px 26px; font-size: 0.95rem; border-radius: 12px; }
   #debugLog {
-    background: #0a0c10;
+    background: var(--bg);
     border: 1px solid var(--panel-border);
-    border-radius: 6px;
-    padding: 8px;
+    border-radius: 10px;
+    padding: 10px;
     font-family: var(--mono);
     font-size: 0.72rem;
     height: 160px;
     overflow-y: auto;
     white-space: pre-wrap;
     word-break: break-all;
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.06);
   }
   .log-tx { color: var(--accent); }
   .log-rx { color: var(--ok); }
   .log-fw { color: var(--text-dim); }
   .log-err { color: var(--err); }
   .toast {
-    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
     background: var(--panel); border: 1px solid var(--panel-border);
-    padding: 10px 16px; border-radius: 8px; font-size: 0.85rem;
+    padding: 10px 18px; border-radius: 12px; font-size: 0.85rem;
+    box-shadow: var(--shadow-md);
     display: none;
     z-index: 200;
   }
   .toast.error { border-color: var(--err); color: var(--err); }
 
+  /* ---- hero icon (connect screen decoration) ---- */
+  .hero-icon {
+    width: 72px; height: 72px;
+    margin: 0 auto 20px;
+    position: relative;
+    opacity: 0.85;
+  }
+  .hero-icon .ring {
+    position: absolute; top: 50%; left: 50%;
+    border: 3px solid var(--accent);
+    border-left-color: transparent;
+    border-right-color: transparent;
+    border-radius: 50%;
+  }
+  .hero-icon .ring:nth-child(1) { width: 72px; height: 72px; margin: -36px 0 0 -36px; transform: rotate(15deg); }
+  .hero-icon .ring:nth-child(2) { width: 54px; height: 54px; margin: -27px 0 0 -27px; transform: rotate(-20deg); }
+  .hero-icon .ring:nth-child(3) { width: 36px; height: 36px; margin: -18px 0 0 -18px; transform: rotate(40deg); }
+  .hero-icon .ring:nth-child(4) { width: 18px; height: 18px; margin: -9px 0 0 -9px; transform: rotate(-60deg); }
+
   /* ---- enroll modal ---- */
   .modal-overlay {
     display: none;
     position: fixed; inset: 0;
-    background: rgba(0,0,0,0.6);
+    background: rgba(0,0,0,0.45);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
     align-items: center; justify-content: center;
     z-index: 100;
     padding: 16px;
@@ -153,13 +235,19 @@
   .modal {
     background: var(--panel);
     border: 1px solid var(--panel-border);
-    border-radius: 12px;
-    padding: 24px;
+    border-radius: 18px;
+    padding: 28px 24px;
     width: 100%;
     max-width: 340px;
     text-align: center;
+    box-shadow: var(--shadow-md);
+    animation: modal-in 0.2s ease;
   }
-  .modal h3 { margin: 0 0 16px; font-size: 1rem; }
+  @keyframes modal-in {
+    from { opacity: 0; transform: scale(0.94); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  .modal h3 { margin: 0 0 18px; font-size: 1.05rem; font-weight: 600; }
   .fingerprint-icon {
     width: 84px; height: 84px;
     margin: 0 auto 18px;
@@ -195,9 +283,10 @@
   <p class="subtitle">指紋センサー: USBまたはBluetooth経由で指ごとの出力文字列と登録を管理します。</p>
 
   <div id="connectScreen">
+    <div class="hero-icon"><div class="ring"></div><div class="ring"></div><div class="ring"></div><div class="ring"></div></div>
     <div class="row" style="justify-content:center; flex-wrap:wrap;">
-      <div style="flex:none;"><button id="connectUsbBtn">USBで接続</button></div>
-      <div style="flex:none;"><button id="connectBleBtn">Bluetoothで接続</button></div>
+      <div style="flex:none;"><button id="connectUsbBtn" class="cta-btn">USBで接続</button></div>
+      <div style="flex:none;"><button id="connectBleBtn" class="cta-btn">Bluetoothで接続</button></div>
     </div>
     <p>
       Chrome または Edge 89以上、かつsecure context(HTTPS・localhost・
@@ -249,6 +338,14 @@
       <div class="slot-detail" id="slotDetail" style="display:none;">
         <h3 id="slotDetailTitle">指 1</h3>
         <div>
+          <label>名前(任意、日本語可・画面表示のみでタイプはされません)</label>
+        </div>
+        <div class="row" style="margin-top:6px;">
+          <div style="flex:2;">
+            <input type="text" id="slotNameInput" placeholder="例: 会社PCログイン">
+          </div>
+        </div>
+        <div style="margin-top:14px;">
           <label>出力文字列 (<span id="slotValueDisplay">未設定</span>、上書きのみ可能)</label>
         </div>
         <div class="row" style="margin-top:6px;">
@@ -282,7 +379,10 @@
       <p class="note">
         センサー本体のフラッシュ(NVS)にのみ保存されます — このシリアル
         接続以外でデバイスの外に出ることはなく、このリポジトリに
-        書き込まれることもありません。
+        書き込まれることもありません。保存時はチップ固有のIDから導出した
+        鍵でAES暗号化されており、フラッシュを単純に読み出しただけでは
+        平文は分かりません(ただし基板に直接デバッグ接続して解析するような
+        相手までは防げません)。
       </p>
     </div>
 
@@ -800,8 +900,8 @@
       const btn = document.createElement("div");
       btn.className = "slot-btn";
       btn.id = "slot-" + id;
-      btn.innerHTML = `<div class="slot-num">${id}</div><div class="slot-status">...</div>` +
-        `<div class="slot-template-status">...</div>`;
+      btn.innerHTML = `<div class="slot-num">${id}</div><div class="slot-name"></div>` +
+        `<div class="slot-status">...</div><div class="slot-template-status">...</div>`;
       btn.addEventListener("click", () => selectSlot(id));
       slotGrid.appendChild(btn);
     }
@@ -815,6 +915,9 @@
     btn.classList.toggle("filled", !!(info && info.hasValue));
     btn.classList.toggle("templated", !!(info && info.templateValid && info.hasTemplate));
     btn.classList.toggle("selected", selectedSlot === id);
+    const nameEl = btn.querySelector(".slot-name");
+    nameEl.textContent = (info && info.name) || "";
+    nameEl.title = (info && info.name) || "";
     btn.querySelector(".slot-status").textContent =
       !info ? "取得失敗(再取得してください)" : info.hasValue ? "文字列設定済み" : "文字列未設定";
     let templateText = "確認中...";
@@ -875,6 +978,7 @@
           const data = await rpc.send("get_finger", { finger_id: id });
           info.hasValue = !!data.has_value;
           info.enter = !!data.enter;
+          info.name = data.name || "";
           gotAny = true;
         } catch (e) {
           // Leave any previously known value alone -- a communication
@@ -903,8 +1007,9 @@
   }
 
   function showSlotDetail(id) {
-    const info = slotInfo.get(id) || { hasValue: false, enter: false };
-    el("slotDetailTitle").textContent = `指 ${id}`;
+    const info = slotInfo.get(id) || { hasValue: false, enter: false, name: "" };
+    el("slotDetailTitle").textContent = info.name ? `指 ${id}・${info.name}` : `指 ${id}`;
+    el("slotNameInput").value = info.name || "";
     el("slotValueDisplay").textContent = info.hasValue ? "設定済み" : "未設定";
     el("slotValueInput").value = "";
     el("slotEnterCheckbox").checked = info.enter;
@@ -916,12 +1021,18 @@
     const id = selectedSlot;
     const value = el("slotValueInput").value;
     const enter = el("slotEnterCheckbox").checked;
+    const name = el("slotNameInput").value;
+    const prevInfo = slotInfo.get(id);
+    const nameChanged = name !== (prevInfo ? prevInfo.name || "" : "");
     try {
       await withStatusPollingPaused(async () => {
         if (value) {
           await rpc.send("update_finger", { finger_id: id, value });
         }
         await rpc.send("set_finger_enter", { finger_id: id, enter });
+        if (nameChanged) {
+          await rpc.send("set_finger_name", { finger_id: id, name });
+        }
       });
       showToast(`指${id}を保存しました`);
       el("slotValueInput").value = "";
