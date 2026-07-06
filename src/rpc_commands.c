@@ -16,7 +16,14 @@
  *
  * Supported cmd values: ping, get_status, get_fingers, get_finger,
  * update_finger, delete_finger, set_finger_enter, set_finger_name,
- * enroll_start, enroll_status, refresh_enroll_map, get_enrolled.
+ * enroll_start, enroll_status, delete_template, refresh_enroll_map,
+ * get_enrolled.
+ *
+ * delete_finger vs delete_template: delete_finger only clears the NVS
+ * output string/enter flag (the fingerprint template is untouched).
+ * delete_template runs PS_DeleteChar on the sensor itself, permanently
+ * removing the enrolled fingerprint at that ID -- irreversible, and
+ * queued through the same busy/one-at-a-time mechanism as enroll_start.
  *
  * WRITE-ONLY BY DESIGN: get_finger never returns the stored output
  * string, only whether one exists (data.has_value) and the "send enter"
@@ -316,6 +323,24 @@ static void cmd_get_enrolled(const char *line, int req_id, zw3021_rpc_tx_fn tx) 
     rpc_send_ok(req_id, data, tx);
 }
 
+static void cmd_delete_template(const char *line, int req_id, zw3021_rpc_tx_fn tx) {
+    int id = json_find_int(line, "finger_id", -1);
+    if (id <= 0) {
+        rpc_send_error(req_id, "missing or invalid finger_id", tx);
+        return;
+    }
+
+    /* PS_DeleteChar on the sensor itself -- distinct from delete_finger,
+     * which only clears the NVS output string/enter flag. Queued the
+     * same way as enroll_start; poll get_status until not busy. */
+    int ret = zw3021_request_delete((uint16_t)id);
+    if (ret != 0) {
+        rpc_send_error(req_id, "busy", tx);
+        return;
+    }
+    rpc_send_ok(req_id, NULL, tx);
+}
+
 static void cmd_enroll_start(const char *line, int req_id, zw3021_rpc_tx_fn tx) {
     int id = json_find_int(line, "finger_id", -1);
     if (id <= 0) {
@@ -352,6 +377,7 @@ static const struct rpc_command rpc_commands[] = {
     {"delete_finger", cmd_delete_finger},
     {"set_finger_enter", cmd_set_finger_enter},
     {"set_finger_name", cmd_set_finger_name},
+    {"delete_template", cmd_delete_template},
     {"enroll_start", cmd_enroll_start},
     {"enroll_status", cmd_enroll_status},
     {"refresh_enroll_map", cmd_refresh_enroll_map},

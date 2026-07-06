@@ -287,6 +287,7 @@ Response: {"ok":true,"req_id":<int>,"data":{...}}
 | `delete_finger` | `finger_id` | also clears the "send enter" flag; does **not** clear the display name |
 | `set_finger_enter` | `finger_id`, `enter` | toggles the per-ID "send enter" flag independently of the string |
 | `set_finger_name` | `finger_id`, `name` | sets a non-secret display label for the slot (UTF-8, up to `ZW3021_STORAGE_NAME_MAX_LEN - 1` bytes), independently of the string |
+| `delete_template` | `finger_id` | wraps `zw3021_request_delete()` -- runs `PS_DeleteChar` on the sensor, permanently removing the enrolled fingerprint template at that ID (irreversible; distinct from `delete_finger`, which only touches the NVS string) |
 | `enroll_start` | `finger_id` | wraps `zw3021_request_enroll()` |
 | `enroll_status` | — | `data.busy` |
 | `refresh_enroll_map` | — | queues a `PS_ReadIndexTable` sensor query (IDs 0-255); poll `get_status` until not busy, then call `get_enrolled` |

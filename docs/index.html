@@ -364,11 +364,14 @@
           <div><button id="slotEnrollBtn">指を登録</button></div>
           <div style="text-align:right;"><button id="slotDeleteBtn" class="danger">文字列を削除</button></div>
         </div>
+        <div class="row" style="margin-top:10px;">
+          <div style="text-align:right;"><button id="slotDeleteTemplateBtn" class="danger">指紋テンプレートを削除</button></div>
+        </div>
         <p class="note">
           「指を登録」はセンサーへの指紋登録(PS_AutoEnroll)、
           「文字列を削除」は保存済みの出力文字列とEnter設定を消すだけです。
-          指紋テンプレート自体を消すには実機の <code>&amp;zw3021_delete</code>
-          キーマップキーを使ってください(このWeb UIからは行えません)。
+          「指紋テンプレートを削除」はセンサー本体に登録された指紋データ自体を
+          完全に削除します(PS_DeleteChar、取り消せません)。
         </p>
       </div>
       <div class="note"><button id="refreshFingersBtn">一覧を更新</button></div>
@@ -763,7 +766,9 @@
   function startBleStabilizeCountdown() {
     const note = el("bleStabilizeNote");
     const enrollBtn = el("slotEnrollBtn");
+    const deleteTemplateBtn = el("slotDeleteTemplateBtn");
     enrollBtn.disabled = true;
+    deleteTemplateBtn.disabled = true;
     let remaining = BLE_STABILIZE_SECONDS;
     const tick = () => {
       note.style.display = "block";
@@ -775,6 +780,7 @@
         bleStabilizeTimer = null;
         note.style.display = "none";
         enrollBtn.disabled = false;
+        deleteTemplateBtn.disabled = false;
         return;
       }
       remaining--;
@@ -789,6 +795,7 @@
     bleStabilizeTimer = null;
     el("bleStabilizeNote").style.display = "none";
     el("slotEnrollBtn").disabled = false;
+    el("slotDeleteTemplateBtn").disabled = false;
   }
 
   function setConnected(connected) {
@@ -1076,6 +1083,29 @@
     try {
       await withStatusPollingPaused(() => rpc.send("delete_finger", { finger_id: id }));
       showToast(`指${id}の文字列を削除しました`);
+      refreshFingers();
+    } catch (e) {
+      showToast("削除に失敗しました: " + e.message, true);
+    }
+  });
+
+  el("slotDeleteTemplateBtn").addEventListener("click", async () => {
+    if (selectedSlot === null) return;
+    const id = selectedSlot;
+    if (!confirm(`指${id}の指紋テンプレートをセンサーから完全に削除します。この操作は取り消せません。よろしいですか?`)) return;
+    try {
+      await withStatusPollingPaused(async () => {
+        await rpc.send("delete_template", { finger_id: id });
+        // PS_DeleteChar runs on the sensor worker thread, same as
+        // enroll_start; wait for it to finish before refreshing so the
+        // template-status display doesn't show stale (pre-delete) data.
+        for (let i = 0; i < ENROLL_MAP_WAIT_TRIES; i++) {
+          const st = await rpc.send("get_status");
+          if (!st.busy) break;
+          await sleep(ENROLL_MAP_WAIT_MS);
+        }
+      });
+      showToast(`指${id}の指紋テンプレートを削除しました`);
       refreshFingers();
     } catch (e) {
       showToast("削除に失敗しました: " + e.message, true);
