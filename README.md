@@ -1,5 +1,7 @@
 # zmk-driver-zw3021
 
+English | [日本語](README.ja.md)
+
 ZMK external module driver for the HLK-ZW3021 fingerprint sensor.
 
 ## Status
@@ -26,7 +28,10 @@ uppercase/symbol output characters. See "Roadmap" below.
 ## Hardware
 
 The ZW3021 is used as a separate 6-pin fingerprint module board (not on the
-main keyboard PCB), with its own load switch for `VCC-D`:
+main keyboard PCB), with its own load switch for `VCC-D`. The load switch
+itself needs a small dedicated/custom board (or equivalent hand-wired
+circuit) of its own -- there's no such circuit on the stock moNa2 PCB, so
+this isn't something you can wire up with the ZW3021 module alone:
 
 ```text
 MCU 3V3
