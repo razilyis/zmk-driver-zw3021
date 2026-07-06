@@ -422,7 +422,15 @@
   const SLOT_IDS = [1, 2, 3, 4, 5];
   const ENROLL_POLL_MS = 1500;
   const STATUS_POLL_MS = 2000;
-  const COMMAND_TIMEOUT_MS = 10000;
+  // Was 10000ms; bumped after real hardware logs showed legitimate
+  // (non-overlapping, successfully-processed) BLE round trips taking up
+  // to ~12s on this standalone RPC connection's slow (UART-safe)
+  // interval, occasionally exceeding 10s and reporting a false failure
+  // for a command that had actually already succeeded on the firmware
+  // side. Harmless for the USB serial transport too, which is always
+  // fast in practice -- this only changes how long a genuine failure
+  // takes to surface.
+  const COMMAND_TIMEOUT_MS = 20000;
   const ENROLL_MAP_WAIT_MS = 300;
   const ENROLL_MAP_WAIT_TRIES = 15;
 
