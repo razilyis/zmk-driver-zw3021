@@ -524,24 +524,26 @@ static void zw3021_power_off_and_rearm(const struct zw3021_config *cfg) {
  * (row 4 in the moNa2 matrix transform, unreachable by real kscan hardware
  * -- see boards/shields/mona2/mona2.dtsi in zmk-config-moNa2-v2), bound on
  * default_layer to '0'-'9', 'a'-'z', the US-keyboard top-row symbols
- * (! @ # $ % ^ & * ( ) - _ = +), LSHIFT, then Enter, in that order.
- * Typing a stored string is done by walking it and raising press/release
- * position-changed events per character (holding the LSHIFT position for
- * the duration of an uppercase letter's press), which ZMK's own
- * split_peripheral_listener automatically forwards to the BLE central
- * (zmk/app/src/split/peripheral.c) -- no protocol changes needed. None of
- * the symbols need LSHIFT themselves -- each has its own dedicated
- * keycode (e.g. AT_SIGN), same as how they're bound directly (not via
- * LS(...)) elsewhere in this keymap's symbol layer.
+ * (! @ # $ % ^ & * ( ) - _ = +) plus `.`/`,` (needed for email addresses;
+ * not actually top-row on a US keyboard, but grouped in with the other
+ * symbols here since none of them need LSHIFT either), LSHIFT, then
+ * Enter, in that order. Typing a stored string is done by walking it and
+ * raising press/release position-changed events per character (holding
+ * the LSHIFT position for the duration of an uppercase letter's press),
+ * which ZMK's own split_peripheral_listener automatically forwards to the
+ * BLE central (zmk/app/src/split/peripheral.c) -- no protocol changes
+ * needed. None of the symbols need LSHIFT themselves -- each has its own
+ * dedicated keycode (e.g. AT_SIGN), same as how they're bound directly
+ * (not via LS(...)) elsewhere in this keymap's symbol layer.
  *
  * Other symbols/spaces are still not supported -- see
  * zw3021_char_to_offset().
  */
-#define ZW3021_OUTPUT_KEYBOARD_LEN 52 /* 36 alnum + 14 symbols + 1 LSHIFT + 1 Enter */
+#define ZW3021_OUTPUT_KEYBOARD_LEN 54 /* 36 alnum + 16 symbols + 1 LSHIFT + 1 Enter */
 #define ZW3021_OUTPUT_BASE_POSITION (ZMK_KEYMAP_LEN - ZW3021_OUTPUT_KEYBOARD_LEN)
-#define ZW3021_OUTPUT_SYMBOL_BASE 36 /* offsets 36-49, see zw3021_char_to_offset() */
-#define ZW3021_OUTPUT_SHIFT_OFFSET 50
-#define ZW3021_OUTPUT_ENTER_OFFSET 51
+#define ZW3021_OUTPUT_SYMBOL_BASE 36 /* offsets 36-51, see zw3021_char_to_offset() */
+#define ZW3021_OUTPUT_SHIFT_OFFSET 52
+#define ZW3021_OUTPUT_ENTER_OFFSET 53
 #define ZW3021_KEYPRESS_GAP_MS 5
 /* Extra settle time before Enter, on top of the normal per-key gap:
  * the receiving app (e.g. a login form) needs a moment after the last
@@ -559,9 +561,9 @@ static int zw3021_char_to_offset(char c) {
     if (c >= 'A' && c <= 'Z') {
         return 10 + (c - 'A'); /* same key position as lowercase; LSHIFT distinguishes case */
     }
-    /* US-keyboard top-row symbols, in physical left-to-right order; must
-     * match the RC(4,N) order for offsets 36-49 in mona2.dtsi. */
-    static const char symbols[] = "!@#$%^&*()-_=+";
+    /* Symbols, in physical left-to-right order; must match the RC(4,N)
+     * order for offsets 36-51 in mona2.dtsi. */
+    static const char symbols[] = "!@#$%^&*()-_=+.,";
     for (size_t i = 0; i < sizeof(symbols) - 1; i++) {
         if (c == symbols[i]) {
             return ZW3021_OUTPUT_SYMBOL_BASE + (int)i;

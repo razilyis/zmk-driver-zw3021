@@ -841,7 +841,7 @@
           <label class="field-label" for="slotValueInput">出力文字列
             <span class="chip" id="slotValueDisplay">未設定</span>
           </label>
-          <input type="text" id="slotValueInput" placeholder="半角英数字 + ! @ # $ % ^ &amp; * ( ) - _ = + (新しい値で上書き)" maxlength="31">
+          <input type="text" id="slotValueInput" placeholder="半角英数字 + ! @ # $ % ^ &amp; * ( ) - _ = + . , (新しい値で上書き)" maxlength="31">
           <div class="field-help">照合成功時にタイプされる文字列です(最大31文字)。上書きのみ可能で、保存済みの値は表示されません。</div>
         </div>
 
@@ -945,7 +945,7 @@
    * (zw3021_char_to_offset() in src/zw3021.c). */
   const VALUE_MAX_CHARS = 31;
   const NAME_MAX_BYTES = 47;
-  const VALUE_ALLOWED_RE = /^[0-9A-Za-z!@#$%^&*()\-_=+]*$/;
+  const VALUE_ALLOWED_RE = /^[0-9A-Za-z!@#$%^&*()\-_=+.,]*$/;
   // Was 10000ms; bumped after real hardware logs showed legitimate
   // (non-overlapping, successfully-processed) BLE round trips taking up
   // to ~12s on this standalone RPC connection's slow (UART-safe)
@@ -1646,7 +1646,7 @@
     // an over-long/unsupported input fails with a clear message here
     // instead of an RPC error (or, worse, an over-long BLE request line).
     if (value && !VALUE_ALLOWED_RE.test(value)) {
-      showToast("出力文字列に使えない文字が含まれています(半角英数字と ! @ # $ % ^ & * ( ) - _ = + のみ)", true);
+      showToast("出力文字列に使えない文字が含まれています(半角英数字と ! @ # $ % ^ & * ( ) - _ = + . , のみ)", true);
       return;
     }
     if (value.length > VALUE_MAX_CHARS) {

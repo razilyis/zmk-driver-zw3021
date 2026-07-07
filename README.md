@@ -220,19 +220,22 @@ automatically forwarded to the central by ZMK's own
 path real key matrix presses already use
 (`zmk/app/src/physical_layouts.c`).
 
-This requires 37 **virtual key positions** reserved beyond the keyboard's
-real key count (one per `0-9`/`a-z` character, plus one for `ENTER`),
-bound on `default_layer` to the matching `&kp` keycode and to `&trans` on
-every other layer -- see `boards/shields/mona2/mona2.dtsi`'s `RC(4,N)`
-transform entries (row 4 is never producible by real kscan hardware,
-which only has 4 physical rows) and `mona2.keymap`'s per-layer bindings in
-`zmk-config-moNa2-v2`. Case and symbols aren't supported yet: uppercase
-letters fold to the same position as lowercase (see
-`zw3021_char_to_offset()` in `src/zw3021.c`). The 37th (`ENTER`) position
-is only pressed after the string if that fingerprint ID has the "send
-enter" flag enabled (`zw3021_storage_get_enter()`, set per-ID over the
-serial RPC's `set_finger_enter` command below) -- useful for something
-like a password manager's master password field where you also want the
+This requires 54 **virtual key positions** reserved beyond the keyboard's
+real key count (one per `0-9`/`a-z` character, one per supported symbol
+`! @ # $ % ^ & * ( ) - _ = + . ,`, one for `LSHIFT`, plus one for
+`ENTER`), bound on `default_layer` to the matching `&kp` keycode and to
+`&trans` on every other layer -- see `boards/shields/mona2/mona2.dtsi`'s
+`RC(4,N)` transform entries (row 4 is never producible by real kscan
+hardware, which only has 4 physical rows) and `mona2.keymap`'s per-layer
+bindings in `zmk-config-moNa2-v2`. Uppercase letters are typed by holding
+the virtual `LSHIFT` position for the duration of that character's press
+(see `zw3021_char_to_offset()`/`zw3021_emit_char()` in `src/zw3021.c`);
+symbols beyond the ones listed above, and spaces, aren't supported. The
+last (`ENTER`) position is only pressed after the string if that
+fingerprint ID has the "send enter" flag enabled
+(`zw3021_storage_get_enter()`, set per-ID over the serial RPC's
+`set_finger_enter` command below) -- useful for something like a
+password manager's master password field where you also want the
 form submitted.
 
 The string itself is stored in NVS on a dedicated flash partition
@@ -549,12 +552,13 @@ No raw fingerprint image, template, or stored-string data is ever logged.
   implemented per the protocol manual but not individually exercised.
 - Output strings support alphanumerics with case (via a virtual LSHIFT
   key held for uppercase letters) plus the US-keyboard top-row symbols
-  `! @ # $ % ^ & * ( ) - _ = +` (enough to type most email addresses),
-  but not other symbols or spaces; see
+  `! @ # $ % ^ & * ( ) - _ = +` and `.`/`,` (enough to type most email
+  addresses), but not other symbols or spaces; see
   `zw3021_char_to_offset()`/`zw3021_emit_char()` in `src/zw3021.c`. This
-  needs a matching 52-slot virtual keyboard in zmk-config-moNa2-v2 (was
-  36 slots originally, then 38 with LSHIFT, now +14 for the symbols) --
-  see its `mona2.dtsi` and both `mona2.keymap` files.
+  needs a matching 54-slot virtual keyboard in zmk-config-moNa2-v2 (was
+  36 slots originally, then 38 with LSHIFT, then 52 with the top-row
+  symbols, now +2 for `.`/`,`) -- see its `mona2.dtsi` and both
+  `mona2.keymap` files.
 - `get_fingers` finds stored IDs by scanning 1..100 and checking each with
   `nvs_read` -- fine at this scale, but not how you'd enumerate a much
   larger ID space.
