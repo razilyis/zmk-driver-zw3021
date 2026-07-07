@@ -49,28 +49,53 @@ LOG_MODULE_REGISTER(zw3021_ble_rpc, CONFIG_ZMK_LOG_LEVEL);
 
 #define ZW3021_BLE_LINE_MAX 176
 #define ZW3021_BLE_TX_RINGBUF_LEN 512
+/* One notify chunk / ring-buffer read; sized to hold a full RPC response
+ * line (ZW3021_RPC_RESPONSE_MAX in rpc_commands.c is 224). */
+#define ZW3021_BLE_TX_CHUNK_MAX 224
+/* Discard a partial request if no byte has arrived for this long (the BLE
+ * counterpart of serial_rpc.c's stale-partial discard -- without it, a
+ * request that never finished poisoned the brace/string framing state for
+ * every request after it, until the browser disconnected). Must comfortably
+ * exceed one BLE connection interval (~1s here) plus write-retry backoff,
+ * since one request's chunked GATT writes legitimately arrive that far
+ * apart. */
+#define ZW3021_BLE_RX_STALE_MS 5000
 
 static char rx_line[ZW3021_BLE_LINE_MAX];
 static uint16_t rx_pos;
 static int rx_brace_depth;
 static bool rx_in_string;
 static bool rx_escape_next;
+static bool rx_discard;
+static int64_t rx_last_byte_time;
 
-static char pending_line[ZW3021_BLE_LINE_MAX];
-K_SEM_DEFINE(pending_line_sem, 0, 1);
+/* Completed request lines are handed off to the processing thread through a
+ * small queue -- not a single shared buffer + semaphore, which a second
+ * request completing before the thread had consumed the first could
+ * silently overwrite. */
+K_MSGQ_DEFINE(zw3021_ble_rpc_msgq, ZW3021_BLE_LINE_MAX, 2, 4);
 
 static struct bt_conn *ble_rpc_conn;
 static struct bt_le_ext_adv *ble_rpc_adv;
 
 RING_BUF_DECLARE(tx_ring_buf, ZW3021_BLE_TX_RINGBUF_LEN);
 
+/* Only touched by tx_work_handler, which runs exclusively on the dedicated
+ * tx work queue below -- effectively single-threaded. */
+static uint8_t tx_chunk[ZW3021_BLE_TX_CHUNK_MAX];
+
 static uint16_t notify_size_for_conn(struct bt_conn *conn) {
-    uint16_t size = 20; /* default ATT payload unless negotiated higher */
-    struct bt_conn_info info;
-    if (conn && bt_conn_get_info(conn, &info) >= 0 && info.le.data_len) {
-        size = info.le.data_len->tx_max_len;
-    }
-    return size;
+    /* A notification payload is capped by the negotiated ATT MTU minus its
+     * 3-byte header -- NOT by the link-layer data length
+     * (bt_conn_info.le.data_len->tx_max_len), which is negotiated
+     * independently and can exceed the MTU (e.g. DLE 251 vs an ATT MTU of
+     * ~185 on macOS). Chunks sized off the LL value made
+     * bt_gatt_notify_cb() fail with -EMSGSIZE whenever more than one
+     * response was queued at once, silently dropping part of the response
+     * stream. */
+    uint16_t mtu = conn ? bt_gatt_get_mtu(conn) : 0;
+    uint16_t size = (mtu > 23) ? (mtu - 3) : 20;
+    return MIN(size, sizeof(tx_chunk));
 }
 
 static void tx_work_handler(struct k_work *work) {
@@ -82,10 +107,9 @@ static void tx_work_handler(struct k_work *work) {
     }
 
     uint16_t chunk_size = notify_size_for_conn(ble_rpc_conn);
-    uint8_t chunk[chunk_size];
 
     while (ring_buf_size_get(&tx_ring_buf) > 0) {
-        uint32_t got = ring_buf_get(&tx_ring_buf, chunk, chunk_size);
+        uint32_t got = ring_buf_get(&tx_ring_buf, tx_chunk, chunk_size);
         if (got == 0) {
             break;
         }
@@ -93,7 +117,7 @@ static void tx_work_handler(struct k_work *work) {
         struct bt_gatt_notify_params params = {0};
         static struct bt_uuid_128 resp_uuid = BT_UUID_INIT_128(ZW3021_BLE_RESPONSE_CHRC_UUID);
         params.uuid = &resp_uuid.uuid;
-        params.data = chunk;
+        params.data = tx_chunk;
         params.len = got;
 
         int attempts = 5;
@@ -115,24 +139,75 @@ static void tx_work_handler(struct k_work *work) {
 
 static K_WORK_DEFINE(tx_work, tx_work_handler);
 
+/* Dedicated work queue: tx_work_handler k_sleep()s while retrying congested
+ * notifies (up to ~120ms per chunk), which must not stall the shared system
+ * work queue that ZMK itself and Zephyr's BT host run deferred work on. */
+static K_THREAD_STACK_DEFINE(zw3021_ble_tx_wq_stack, 1024);
+static struct k_work_q zw3021_ble_tx_wq;
+
+static struct k_spinlock tx_ring_lock;
+
 static void ble_rpc_transmit(const char *data, size_t len) {
     if (!ble_rpc_conn) {
         return;
     }
-    ring_buf_put(&tx_ring_buf, (const uint8_t *)data, len);
-    k_work_submit(&tx_work);
+    /* All-or-nothing put, serialized across the two producer contexts (the
+     * RPC processing thread, and framing errors sent from BT RX context):
+     * a partial or interleaved put would corrupt the newline framing of
+     * every response after it, while dropping a whole line only times out
+     * the one command it belonged to. */
+    k_spinlock_key_t key = k_spin_lock(&tx_ring_lock);
+    bool fits = ring_buf_space_get(&tx_ring_buf) >= len;
+    if (fits) {
+        ring_buf_put(&tx_ring_buf, (const uint8_t *)data, len);
+    }
+    k_spin_unlock(&tx_ring_lock, key);
+
+    if (!fits) {
+        LOG_WRN("zw3021: BLE RPC tx ring full, dropping response");
+        return;
+    }
+    k_work_submit_to_queue(&zw3021_ble_tx_wq, &tx_work);
+}
+
+static void rx_reset(void) {
+    rx_pos = 0;
+    rx_brace_depth = 0;
+    rx_in_string = false;
+    rx_escape_next = false;
 }
 
 static void feed_byte(uint8_t b) {
+    int64_t now = k_uptime_get();
+    if ((rx_pos > 0 || rx_discard) && (now - rx_last_byte_time) > ZW3021_BLE_RX_STALE_MS) {
+        if (rx_pos > 0) {
+            LOG_WRN("zw3021: BLE RPC: discarding stale partial message");
+        }
+        rx_reset();
+        rx_discard = false;
+    }
+    rx_last_byte_time = now;
+
+    if (rx_discard) {
+        /* Discarding the tail of an over-long message. Resyncing on a
+         * quote/brace inside that tail would poison rx_in_string /
+         * rx_brace_depth for everything after it; the browser client ends
+         * every request with '\n', so that's where the bad message
+         * reliably ends and clean framing can resume. (A non-newline
+         * client is still recovered by the stale timeout above.) */
+        if (b == '\n') {
+            rx_discard = false;
+        }
+        return;
+    }
+
     if (rx_pos == 0 && (b == '\n' || b == '\r' || b == ' ')) {
         return;
     }
 
     if (rx_pos >= sizeof(rx_line) - 1) {
-        rx_pos = 0;
-        rx_brace_depth = 0;
-        rx_in_string = false;
-        rx_escape_next = false;
+        rx_reset();
+        rx_discard = true;
         zw3021_rpc_send_framing_error("line too long", ble_rpc_transmit);
         return;
     }
@@ -153,10 +228,11 @@ static void feed_byte(uint8_t b) {
             rx_line[rx_pos] = '\0';
             /* Hand off to the processing thread rather than blocking the
              * BT RX context (matches ZMK Studio's own rpc.c pattern). */
-            strncpy(pending_line, rx_line, sizeof(pending_line) - 1);
-            pending_line[sizeof(pending_line) - 1] = '\0';
+            if (k_msgq_put(&zw3021_ble_rpc_msgq, rx_line, K_NO_WAIT) != 0) {
+                LOG_WRN("zw3021: BLE RPC request queue full, dropping request");
+                zw3021_rpc_send_framing_error("busy", ble_rpc_transmit);
+            }
             rx_pos = 0;
-            k_sem_give(&pending_line_sem);
         }
     }
 }
@@ -195,13 +271,16 @@ static void rpc_processing_thread(void *p1, void *p2, void *p3) {
     ARG_UNUSED(p2);
     ARG_UNUSED(p3);
 
+    /* Single consumer thread; static keeps the line off its stack. */
+    static char line[ZW3021_BLE_LINE_MAX];
+
     for (;;) {
-        k_sem_take(&pending_line_sem, K_FOREVER);
-        zw3021_rpc_process_line(pending_line, ble_rpc_transmit);
+        k_msgq_get(&zw3021_ble_rpc_msgq, line, K_FOREVER);
+        zw3021_rpc_process_line(line, ble_rpc_transmit);
     }
 }
 
-K_THREAD_DEFINE(zw3021_ble_rpc_tid, 2048, rpc_processing_thread, NULL, NULL, NULL, 10, 0, 0);
+K_THREAD_DEFINE(zw3021_ble_rpc_tid, 2560, rpc_processing_thread, NULL, NULL, NULL, 10, 0, 0);
 
 static int start_advertising(void);
 
@@ -289,10 +368,9 @@ static void on_disconnected(struct bt_conn *conn, uint8_t reason) {
     LOG_INF("zw3021: BLE RPC client disconnected");
     ble_rpc_conn = NULL;
     ring_buf_reset(&tx_ring_buf);
-    rx_pos = 0;
-    rx_brace_depth = 0;
-    rx_in_string = false;
-    rx_escape_next = false;
+    rx_reset();
+    rx_discard = false;
+    k_msgq_purge(&zw3021_ble_rpc_msgq);
     schedule_advertising_start(BLE_RPC_ADV_RETRY_INITIAL_DELAY_MS);
 }
 
@@ -386,6 +464,8 @@ static struct settings_handler zw3021_ble_rpc_settings_handler = {
 #endif
 
 static int zw3021_ble_rpc_init(void) {
+    k_work_queue_start(&zw3021_ble_tx_wq, zw3021_ble_tx_wq_stack,
+                       K_THREAD_STACK_SIZEOF(zw3021_ble_tx_wq_stack), 10, NULL);
 #if IS_ENABLED(CONFIG_SETTINGS)
     return settings_register(&zw3021_ble_rpc_settings_handler);
 #else

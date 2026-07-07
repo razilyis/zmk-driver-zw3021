@@ -25,6 +25,7 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/atomic.h>
 
 #if IS_ENABLED(CONFIG_ZW3021_STORAGE)
 #include "zw3021_storage.h"
@@ -106,7 +107,11 @@ static struct gpio_callback zw3021_int_cb;
 K_SEM_DEFINE(zw3021_finger_sem, 0, 1);
 
 static struct zw3021_request zw3021_pending_request;
-static bool zw3021_request_pending;
+/* 0 = idle, 1 = a request is queued or running. Atomic because
+ * zw3021_queue_request() can be called concurrently from the serial RPC
+ * thread, the BLE RPC thread, and behavior invocations -- a plain
+ * check-then-set bool let two callers both claim the single request slot. */
+static atomic_t zw3021_request_busy;
 K_SEM_DEFINE(zw3021_request_sem, 0, 1);
 
 /* Last bitmap fetched by ZW3021_REQ_READ_ENROLLED, and whether one has
@@ -724,18 +729,30 @@ static void zw3021_handle_request_event(const struct device *dev, const struct z
         }
     }
 
+    /* Clear busy before the power-off/INT-low re-arm wait below: with a
+     * finger still resting on the sensor after an enrollment, that wait
+     * lasts until the finger lifts, and reporting busy for its whole
+     * duration made the Web UI's enroll modal (and the wait loops in its
+     * refresh/delete flows) hang on a long-finished operation. The request
+     * slot really is free again at this point -- a request queued during
+     * the re-arm wait is simply picked up on the worker's next loop
+     * iteration, after this re-arm completes. */
+    atomic_clear(&zw3021_request_busy);
+
     zw3021_power_off_and_rearm(cfg);
 }
 
 static int zw3021_queue_request(enum zw3021_request_type type, uint16_t id) {
-    if (zw3021_request_pending) {
+    if (!atomic_cas(&zw3021_request_busy, 0, 1)) {
         LOG_WRN("zw3021: busy, dropping request (type=%d)", type);
         return -EBUSY;
     }
 
+    /* Safe to write without further locking: the cas above made this the
+     * only in-flight request, and the worker only reads these fields after
+     * taking the semaphore given below. */
     zw3021_pending_request.type = type;
     zw3021_pending_request.id = id;
-    zw3021_request_pending = true;
     k_sem_give(&zw3021_request_sem);
     return 0;
 }
@@ -748,7 +765,7 @@ int zw3021_request_clear(void) { return zw3021_queue_request(ZW3021_REQ_CLEAR, 0
 
 int zw3021_request_read_enrolled(void) { return zw3021_queue_request(ZW3021_REQ_READ_ENROLLED, 0); }
 
-bool zw3021_is_busy(void) { return zw3021_request_pending; }
+bool zw3021_is_busy(void) { return atomic_get(&zw3021_request_busy) != 0; }
 
 int zw3021_get_enrolled(uint16_t id, bool *has_template) {
     if (!zw3021_enrolled_bitmap_valid) {
@@ -787,9 +804,13 @@ static void zw3021_thread_fn(void *p1, void *p2, void *p3) {
             k_sem_take(&zw3021_request_sem, K_NO_WAIT);
             struct zw3021_request req = zw3021_pending_request;
             if (zw3021_dev != NULL) {
+                /* Clears zw3021_request_busy itself, before its re-arm
+                 * wait. Not cleared again here: a new request may already
+                 * have claimed the slot by the time this returns. */
                 zw3021_handle_request_event(zw3021_dev, &req);
+            } else {
+                atomic_clear(&zw3021_request_busy);
             }
-            zw3021_request_pending = false;
         }
 
         events[0].state = K_POLL_STATE_NOT_READY;

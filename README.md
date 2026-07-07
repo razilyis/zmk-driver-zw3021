@@ -197,7 +197,10 @@ Keymap usage: `&zw3021_enroll 1` (enroll under ID 1), `&zw3021_delete 1`
 (delete ID 1), `&zw3021_clear` (erase the whole database). Each queues a
 request to the sensor's worker thread and returns immediately; a request
 made while one is already running is dropped with a logged warning
-(`-EBUSY`) rather than queued.
+(`-EBUSY`) rather than queued. The busy state clears as soon as the sensor
+operation itself completes -- the driver may still be waiting for the
+finger to lift (INT back to low) before re-arming, and a request queued
+during that wait is picked up right after the re-arm finishes.
 
 ## Per-fingerprint-ID keystroke output
 
@@ -288,10 +291,10 @@ Response: {"ok":true,"req_id":<int>,"data":{...}}
 | `get_status` | — | `data.busy` |
 | `get_fingers` | — | `data.ids`: array of IDs with a stored string |
 | `get_finger` | `finger_id` | `data.has_value`, `data.enter`, `data.name` -- **never returns the string itself**, but `name` (see below) is returned as-is |
-| `update_finger` | `finger_id`, `value` | writes/overwrites the string (write-only) |
+| `update_finger` | `finger_id`, `value` | writes/overwrites the string (write-only); at most 31 chars (`ZW3021_STORAGE_MAX_LEN - 1`), longer values are rejected with `value too long` |
 | `delete_finger` | `finger_id` | also clears the "send enter" flag; does **not** clear the display name |
 | `set_finger_enter` | `finger_id`, `enter` | toggles the per-ID "send enter" flag independently of the string |
-| `set_finger_name` | `finger_id`, `name` | sets a non-secret display label for the slot (UTF-8, up to `ZW3021_STORAGE_NAME_MAX_LEN - 1` bytes), independently of the string |
+| `set_finger_name` | `finger_id`, `name` | sets a non-secret display label for the slot (UTF-8, up to `ZW3021_STORAGE_NAME_MAX_LEN - 1` bytes, longer names are rejected with `name too long`), independently of the string |
 | `delete_template` | `finger_id` | wraps `zw3021_request_delete()` -- runs `PS_DeleteChar` on the sensor, permanently removing the enrolled fingerprint template at that ID (irreversible; distinct from `delete_finger`, which only touches the NVS string) |
 | `enroll_start` | `finger_id` | wraps `zw3021_request_enroll()` |
 | `enroll_status` | — | `data.busy` |
@@ -370,6 +373,19 @@ also pauses its background `get_status` poll for the duration of an
 enrollment attempt, to keep BLE traffic minimal exactly when the
 sensor's UART timing matters most.
 
+Transport robustness details (all in `src/ble_rpc.c`): notification
+chunks are sized from the negotiated **ATT MTU** (minus its 3-byte
+header), not the link-layer data length -- the two are negotiated
+independently, and chunks sized off the LL value failed with `-EMSGSIZE`
+and dropped part of the response stream on stacks whose MTU is smaller
+(e.g. macOS). Notify retries run on a dedicated work queue so their
+backoff sleeps can't stall Zephyr's shared system workqueue. On the
+receive side, a request whose bytes stop arriving mid-message is
+discarded after 5 seconds, and an over-long request is discarded up to
+its trailing newline (the BLE counterpart of the serial transport's
+stale-partial discard), so one malformed or over-sized request can no
+longer wedge the JSON framing for the rest of the connection.
+
 Both GATT characteristics require an encrypted (paired/bonded)
 connection (`BT_GATT_PERM_*_ENCRYPT`) -- consistent with the RPC's
 write-only design, the goal is that nobody can read or write a
@@ -389,6 +405,24 @@ finger slots have an output string configured (never the string itself,
 per the write-only design above), overwrite/delete them, toggle the
 per-finger "send enter" flag, and trigger enrollment with an animated
 modal -- all from a Chrome or Edge tab, no software install required.
+
+Behavior notes:
+- Over Bluetooth, the page defers its initial slot fetch (as well as the
+  enroll / delete-template buttons) behind the ~6-second countdown
+  described under "Standalone BLE RPC": the fetch involves a real sensor
+  UART operation (`refresh_enroll_map`), which is unreliable until the
+  longer connection interval has been negotiated.
+- GATT writes start with large (180-byte) chunks and automatically fall
+  back to 20-byte chunks if the stack rejects them (Web Bluetooth doesn't
+  expose the ATT MTU), keeping command round trips short on the
+  deliberately slow connection interval.
+- Inputs are validated against the firmware's storage limits before
+  anything is sent: output string at most 31 chars from the supported
+  character set, name at most 47 UTF-8 bytes.
+- A background list refresh never overwrites form fields being edited
+  (and never touches the write-only string field), so an unchecked
+  "send enter" box or an in-progress name edit can't be silently
+  reverted right before saving.
 
 Requirements:
 - Chrome or Edge 89+ (neither API is implemented in Firefox/Safari).
@@ -529,9 +563,9 @@ No raw fingerprint image, template, or stored-string data is ever logged.
   the driver requests a much longer BLE connection interval on connect
   (see "Standalone BLE RPC" above) to stop it from disrupting the
   sensor's UART timing, and that renegotiation takes a few seconds to
-  land. `docs/index.html` disables the enroll button and shows a
-  countdown for the first 6 seconds after a Bluetooth connection to
-  cover this; USB has no such warm-up period.
+  land. `docs/index.html` disables the enroll button, defers its initial
+  slot fetch, and shows a countdown for the first 6 seconds after a
+  Bluetooth connection to cover this; USB has no such warm-up period.
 - `enroll_status` only reports whether the driver is busy, not
   success/failure detail for the enrollment attempt in progress -- the
   Web UI can only tell you when it's done, not whether it succeeded.

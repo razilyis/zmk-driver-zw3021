@@ -59,10 +59,12 @@ LOG_MODULE_REGISTER(zw3021_rpc_commands, CONFIG_ZMK_LOG_LEVEL);
 #define ZW3021_RPC_SCAN_MAX_ID 100
 #define ZW3021_RPC_RESPONSE_MAX 224
 
-static char rpc_resp_buf[ZW3021_RPC_RESPONSE_MAX];
-
 /* ===== Minimal JSON helpers (flat objects only, no nesting) ===== */
 
+/* Returns 0 on success, -1 if the key is missing, and 1 if a value was
+ * present but didn't fit in out (i.e. the closing quote was never reached).
+ * Callers treat 1 as a distinct "too long" error: silently storing a
+ * truncated prefix of e.g. a password would be worse than rejecting it. */
 static int json_find_string(const char *json, const char *key, char *out, size_t out_size) {
     char search[32];
     snprintf(search, sizeof(search), "\"%s\":\"", key);
@@ -81,7 +83,7 @@ static int json_find_string(const char *json, const char *key, char *out, size_t
         out[i++] = *p++;
     }
     out[i] = '\0';
-    return 0;
+    return (*p == '"') ? 0 : 1;
 }
 
 static int json_find_int(const char *json, const char *key, int def) {
@@ -152,19 +154,27 @@ static bool json_find_bool(const char *json, const char *key, bool def) {
 
 /* ===== Response senders ===== */
 
+/* Response buffers are stack-local, not a shared static: requests are
+ * processed concurrently on the serial RPC thread and the BLE RPC thread
+ * when both transports are in use (USB cable plugged in while a browser is
+ * connected over Bluetooth), and a shared buffer let the two transports
+ * corrupt each other's responses. */
+
 static void rpc_send_ok(int req_id, const char *data_json, zw3021_rpc_tx_fn tx) {
-    int pos = snprintf(rpc_resp_buf, sizeof(rpc_resp_buf), "{\"ok\":true,\"req_id\":%d,\"data\":%s}\n",
+    char buf[ZW3021_RPC_RESPONSE_MAX];
+    int pos = snprintf(buf, sizeof(buf), "{\"ok\":true,\"req_id\":%d,\"data\":%s}\n",
                         req_id, data_json ? data_json : "{}");
-    if (pos > 0 && (size_t)pos < sizeof(rpc_resp_buf)) {
-        tx(rpc_resp_buf, (size_t)pos);
+    if (pos > 0 && (size_t)pos < sizeof(buf)) {
+        tx(buf, (size_t)pos);
     }
 }
 
 static void rpc_send_error(int req_id, const char *message, zw3021_rpc_tx_fn tx) {
-    int pos = snprintf(rpc_resp_buf, sizeof(rpc_resp_buf), "{\"ok\":false,\"req_id\":%d,\"message\":\"%s\"}\n",
+    char buf[ZW3021_RPC_RESPONSE_MAX];
+    int pos = snprintf(buf, sizeof(buf), "{\"ok\":false,\"req_id\":%d,\"message\":\"%s\"}\n",
                         req_id, message);
-    if (pos > 0 && (size_t)pos < sizeof(rpc_resp_buf)) {
-        tx(rpc_resp_buf, (size_t)pos);
+    if (pos > 0 && (size_t)pos < sizeof(buf)) {
+        tx(buf, (size_t)pos);
     }
 }
 
@@ -232,8 +242,15 @@ static void cmd_set_finger_name(const char *line, int req_id, zw3021_rpc_tx_fn t
         rpc_send_error(req_id, "missing or invalid finger_id", tx);
         return;
     }
-    if (json_find_string(line, "name", name, sizeof(name)) != 0) {
+    int nret = json_find_string(line, "name", name, sizeof(name));
+    if (nret < 0) {
         rpc_send_error(req_id, "missing name", tx);
+        return;
+    }
+    /* Distinct error for over-long input: the storage layer would reject it
+     * anyway, but as a generic "storage write failed". */
+    if (nret > 0 || strlen(name) >= ZW3021_STORAGE_NAME_MAX_LEN) {
+        rpc_send_error(req_id, "name too long (max 47 bytes)", tx);
         return;
     }
 
@@ -269,8 +286,15 @@ static void cmd_update_finger(const char *line, int req_id, zw3021_rpc_tx_fn tx)
         rpc_send_error(req_id, "missing or invalid finger_id", tx);
         return;
     }
-    if (json_find_string(line, "value", value, sizeof(value)) != 0) {
+    int vret = json_find_string(line, "value", value, sizeof(value));
+    if (vret < 0) {
         rpc_send_error(req_id, "missing value", tx);
+        return;
+    }
+    /* Distinct error for over-long input: the storage layer would reject it
+     * anyway, but as a generic "storage write failed". */
+    if (vret > 0 || strlen(value) >= ZW3021_STORAGE_MAX_LEN) {
+        rpc_send_error(req_id, "value too long (max 31 chars)", tx);
         return;
     }
 
